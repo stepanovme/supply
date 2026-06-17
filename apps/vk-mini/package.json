@@ -1,0 +1,23 @@
+{
+  "name": "supply-vk-mini",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@vkontakte/vk-bridge": "^2.15.9",
+    "@vkontakte/vk-tunnel": "^0.2.10",
+    "pinia": "^3.0.4",
+    "vue": "^3.5.27",
+    "vue-router": "^5.0.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-basic-ssl": "^2.3.0",
+    "@vitejs/plugin-vue": "^6.0.3",
+    "vite": "^7.3.1"
+  }
+}
