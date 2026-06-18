@@ -120,29 +120,27 @@ const filteredProjectObjects = computed(() => {
   return combinedProjectItems.value.filter((item) => String(item.name || '').toLowerCase().includes(q))
 })
 
-const supplierOptions = ref([
-  { id: '1', name: 'ООО "ПРОЕКТСТРОЙ"' },
-  { id: '2', name: 'ООО "Строй технологии"' },
-  { id: '3', name: 'ИП Степановский Евгений Викторович' },
-])
-const payerOptions = ref([
-  { id: '10', name: 'ООО "Строй технологии"' },
-  { id: '11', name: 'ООО "ПРОЕКТСТРОЙ"' },
-  { id: '12', name: 'ИП Степановский Виктор Викторович' },
-])
-
+const counterparties = ref([])
+const counterpartiesLoading = ref(false)
 const supplierQuery = ref('')
 const payerQuery = ref('')
 const supplierOpen = ref(false)
 const payerOpen = ref(false)
-const invoiceItemsSnapshot = ref([])
-const deletedInvoiceItemIds = ref(new Set())
-const tempItemSeq = ref(1)
-const rowMenu = ref({
-  open: false,
-  x: 0,
-  y: 0,
-  rowId: '',
+
+const filteredSuppliers = computed(() => {
+  const q = supplierQuery.value.trim().toLowerCase()
+  if (!q) return counterparties.value
+  return counterparties.value.filter((item) =>
+    String(item.name || '').toLowerCase().includes(q)
+    || String(item.inn || '').toLowerCase().includes(q))
+})
+
+const filteredPayers = computed(() => {
+  const q = payerQuery.value.trim().toLowerCase()
+  if (!q) return counterparties.value
+  return counterparties.value.filter((item) =>
+    String(item.name || '').toLowerCase().includes(q)
+    || String(item.inn || '').toLowerCase().includes(q))
 })
 const toast = ref({
   open: false,
@@ -153,18 +151,6 @@ const toast = ref({
 
 let toastTimer = null
 let toastCloseTimer = null
-
-const filteredSuppliers = computed(() => {
-  const q = supplierQuery.value.trim().toLowerCase()
-  if (!q) return supplierOptions.value
-  return supplierOptions.value.filter((item) => item.name.toLowerCase().includes(q))
-})
-
-const filteredPayers = computed(() => {
-  const q = payerQuery.value.trim().toLowerCase()
-  if (!q) return payerOptions.value
-  return payerOptions.value.filter((item) => item.name.toLowerCase().includes(q))
-})
 
 const invoicePositions = ref([
   { id: 'tmp-1', idx: 1, name: '', qty: '', unit: '', price: '', sum: '', vat: '' },
@@ -187,6 +173,10 @@ const mappingSessionGroupNumber = ref(null)
 const requestSort = ref({ key: 'idx', dir: 'asc' })
 const billSort = ref({ key: 'idx', dir: 'asc' })
 let tempMappingSeq = 1
+const tempItemSeq = ref(1)
+const invoiceItemsSnapshot = ref([])
+const deletedInvoiceItemIds = ref(new Set())
+const rowMenu = ref({ open: false, x: 0, y: 0, rowId: '' })
 
 const supplierPrint = computed(() => `${supplier.value.inn || ''} | ${supplier.value.kpp || ''} | ${supplier.value.name || ''} | ${supplier.value.account || ''}`)
 const payerPrint = computed(() => `${payer.value.inn || ''} | ${payer.value.kpp || ''} | ${payer.value.name || ''} | ${payer.value.account || ''}`)
@@ -431,12 +421,73 @@ const selectSupplier = (item) => {
   supplierQuery.value = item.name
   supplier.value.name = item.name
   supplierOpen.value = false
+  saveProviderId(item.id)
 }
 
 const selectPayer = (item) => {
   payerQuery.value = item.name
   payer.value.name = item.name
   payerOpen.value = false
+  savePayerId(item.id)
+}
+
+const saveProviderId = async (providerId) => {
+  const id = String(invoiceId.value || route.params.invoiceId || '')
+  if (!id || !providerId) return
+  try {
+    const res = await fetch(`/apisup/supply/invoices/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_id: String(providerId) }),
+    })
+    if (!res.ok) throw new Error('provider save failed')
+    await loadInvoice()
+  } catch {
+    // ignore
+  }
+}
+
+const savePayerId = async (payerId) => {
+  const id = String(invoiceId.value || route.params.invoiceId || '')
+  if (!id || !payerId) return
+  try {
+    const res = await fetch(`/apisup/supply/invoices/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ payer_id: String(payerId) }),
+    })
+    if (!res.ok) throw new Error('payer save failed')
+    await loadInvoice()
+  } catch {
+    // ignore
+  }
+}
+
+const loadCounterparties = async () => {
+  counterpartiesLoading.value = true
+  try {
+    let res = await fetch('/apiref/ref/counterparties', { credentials: 'include' })
+    if (!res.ok) {
+      res = await fetch('/apiref/ref/counterparties/summary', { credentials: 'include' })
+    }
+    if (!res.ok) throw new Error('counterparties load failed')
+    counterparties.value = normalizeArray(await res.json())
+      .map((item) => {
+        const id = item?.id || item?.counterparty_id || item?.uuid || ''
+        return {
+          id,
+          name: item?.name || item?.short_name || item?.caption || '—',
+          inn: item?.inn || '',
+        }
+      })
+      .filter((item) => item.id)
+  } catch {
+    counterparties.value = []
+  } finally {
+    counterpartiesLoading.value = false
+  }
 }
 
 const selectFromByUser = (item) => {
@@ -1093,13 +1144,6 @@ const loadInvoice = async () => {
     supplierQuery.value = supplier.value.name
     payerQuery.value = payer.value.name
 
-    supplierOptions.value = supplier.value.name
-      ? [{ id: String(data?.provider_id || ''), name: supplier.value.name }]
-      : []
-    payerOptions.value = payer.value.name
-      ? [{ id: String(data?.payer_id || ''), name: payer.value.name }]
-      : []
-
     invoiceDate.value = toInputDate(data?.date)
     invoiceNumber.value = String(data?.num || '')
     deliveryIncluded.value = Boolean(data?.is_delivery_included)
@@ -1156,7 +1200,9 @@ const loadInvoice = async () => {
     invoiceError.value = 'Не удалось загрузить данные счета.'
   } finally {
     invoiceLoading.value = false
-    isHydratingInvoice.value = false
+    setTimeout(() => {
+      isHydratingInvoice.value = false
+    }, 0)
   }
 }
 
@@ -1262,6 +1308,7 @@ const scheduleAutoSave = () => {
   if (autoSaveTimer) clearTimeout(autoSaveTimer)
   autoSaveTimer = setTimeout(async () => {
     autoSaveTimer = null
+    if (isHydratingInvoice.value) return
     await saveDraft({ silent: true, refreshAfterSave: false, fromAuto: true })
   }, 650)
 }
@@ -1280,16 +1327,13 @@ const saveDraft = async ({ silent = false, refreshAfterSave = true, fromAuto = f
       method: 'PATCH',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(Object.assign(
-        {
-          num: String(invoiceNumber.value || ''),
-          date: String(invoiceDate.value || ''),
-          from_by: fromByUserId.value || null,
-        },
-        selectedObjectId.value === 'object'
-          ? { object: projectObjectId.value || null, object_levels_id: null }
-          : { object_levels_id: projectObjectId.value || null, object: null }
-      )),
+      body: JSON.stringify({
+        num: String(invoiceNumber.value || ''),
+        date: String(invoiceDate.value || ''),
+        from_by: fromByUserId.value || null,
+        object_levels_id: projectObjectId.value || null,
+        object_type: selectedObjectId.value || null,
+      }),
     })
     if (!patchHeaderRes.ok) throw new Error('invoice header patch failed')
 
@@ -1455,6 +1499,7 @@ onMounted(() => {
   loadAllUsers()
   loadProjectObjects()
   loadObjects()
+  loadCounterparties()
 })
 
 watch(() => route.params.invoiceId, () => {
@@ -1590,9 +1635,11 @@ onBeforeUnmount(() => {
               <label>КПП<input v-model="supplier.kpp" type="text"></label>
               <label>Наименование
                 <div class="lookup-wrap supplier-lookup">
-                  <input v-model="supplierQuery" type="text" @focus="supplierOpen = true" @input="supplierOpen = true">
+                  <input v-model="supplierQuery" type="text" placeholder="Начните вводить название" @focus="supplierOpen = true" @input="supplierOpen = true">
                   <div v-if="supplierOpen" class="lookup-list">
-                    <button v-for="item in filteredSuppliers" :key="item.id" type="button" class="lookup-item" @click="selectSupplier(item)">{{ item.name }}</button>
+                    <div v-if="counterpartiesLoading" class="lookup-empty">Загрузка...</div>
+                    <button v-for="item in filteredSuppliers" :key="item.id" type="button" class="lookup-item" @click="selectSupplier(item)">{{ item.name }} <span v-if="item.inn" class="lookup-inn">({{ item.inn }})</span></button>
+                    <div v-if="!counterpartiesLoading && !filteredSuppliers.length" class="lookup-empty">Ничего не найдено</div>
                   </div>
                 </div>
               </label>
@@ -1608,9 +1655,11 @@ onBeforeUnmount(() => {
               <label>КПП<input v-model="payer.kpp" type="text"></label>
               <label>Наименование
                 <div class="lookup-wrap payer-lookup">
-                  <input v-model="payerQuery" type="text" @focus="payerOpen = true" @input="payerOpen = true">
+                  <input v-model="payerQuery" type="text" placeholder="Начните вводить название" @focus="payerOpen = true" @input="payerOpen = true">
                   <div v-if="payerOpen" class="lookup-list">
-                    <button v-for="item in filteredPayers" :key="item.id" type="button" class="lookup-item" @click="selectPayer(item)">{{ item.name }}</button>
+                    <div v-if="counterpartiesLoading" class="lookup-empty">Загрузка...</div>
+                    <button v-for="item in filteredPayers" :key="item.id" type="button" class="lookup-item" @click="selectPayer(item)">{{ item.name }} <span v-if="item.inn" class="lookup-inn">({{ item.inn }})</span></button>
+                    <div v-if="!counterpartiesLoading && !filteredPayers.length" class="lookup-empty">Ничего не найдено</div>
                   </div>
                 </div>
               </label>
@@ -2118,6 +2167,10 @@ onBeforeUnmount(() => {
 .step-title {
   font-size: 13px;
   color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .title-link {
@@ -2152,30 +2205,79 @@ onBeforeUnmount(() => {
   border-radius: 4px;
   font-size: 11px;
   font-weight: 600;
-  background: #e8e8e8;
-  color: #666;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
 }
 
+.page-loader,
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 1000;
+  z-index: 300;
+  background: color-mix(in srgb, #0f172a 38%, transparent);
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.45);
   padding: 20px;
 }
 
-.modal-card {
-  background: var(--bg-surface);
-  border-radius: var(--radius-lg);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+.stage-layout {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(300px, 42%) minmax(420px, 58%);
+  gap: 14px;
+}
+
+.stage-three {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  max-height: 90vh;
-  width: 480px;
-  padding: 20px 24px;
+}
+
+.pdf-pane {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.pdf-title {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-light);
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.pdf-placeholder {
+  flex: 1;
+  min-height: 260px;
+  overflow: hidden;
+  background: #e2e8f0;
+}
+
+.stage-body {
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal-card {
+  border-radius: 12px;
+  border: 1px solid var(--border-light);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-md);
+  width: min(520px, calc(100vw - 32px));
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
 }
 
@@ -2308,5 +2410,613 @@ onBeforeUnmount(() => {
   text-align: center;
   color: var(--text-tertiary);
   font-size: 13px;
+}
+
+.card-block,
+.table-card {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+  padding: 12px;
+}
+
+.card-block h3,
+.table-title {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.table-title-inline {
+  margin-bottom: 0;
+}
+
+.card-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.card-title-row h3 {
+  margin: 0;
+}
+
+.card-title-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.field-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.field-stack > label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.field-stack input {
+  width: 100%;
+  min-height: 36px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-light);
+  background: var(--bg-subtle);
+  padding: 0 10px;
+}
+
+.option-row {
+  display: flex;
+  gap: 6px;
+}
+
+.option-btn {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.option-btn.active {
+  border-color: var(--brand-primary);
+  background: var(--brand-light);
+  color: var(--brand-primary);
+  font-weight: 600;
+}
+
+.sum-hint {
+  font-size: 11px;
+  color: var(--danger-text);
+  padding: 4px 2px 0;
+}
+
+.btn {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  min-height: 30px;
+  padding: 0 12px;
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn-primary {
+  border-color: var(--brand-primary);
+  background: var(--brand-primary);
+  color: #fff;
+}
+
+.toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  padding: 10px 18px;
+  border-radius: var(--radius-md);
+  background: #1e293b;
+  color: #f1f5f9;
+  font-size: 13px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  overflow: hidden;
+}
+
+.toast-timer {
+  width: 4px;
+  height: 100%;
+  background: var(--brand-primary);
+  position: absolute;
+  left: 0;
+  top: 0;
+  animation: toast-shrink 3s linear forwards;
+}
+
+@keyframes toast-shrink {
+  from { width: 100%; }
+  to { width: 0%; }
+}
+
+.toast-fade-enter-active,
+.toast-fade-leave-active {
+  transition: opacity 0.3s, transform 0.3s;
+}
+
+.toast-fade-enter-from,
+.toast-fade-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(10px);
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.field-grid.two-cols {
+  grid-template-columns: repeat(2, minmax(120px, 260px));
+}
+
+.field-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.field-grid input {
+  width: 100%;
+  min-height: 36px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-light);
+  background: var(--bg-subtle);
+  padding: 0 10px;
+}
+
+.icon-btn {
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.icon-btn:hover {
+  background: var(--bg-subtle);
+}
+
+.icon-btn.danger {
+  color: var(--danger-text);
+  border-color: color-mix(in srgb, var(--danger-text) 40%, var(--border-light));
+}
+
+.invoice-items-card {
+  display: flex;
+  flex-direction: column;
+  min-height: fit-content;
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+.invoice-items-wrap {
+  flex: 0 0 auto;
+  min-height: 0;
+  max-height: none;
+  overflow: auto;
+}
+
+.table-wrap {
+  overflow: visible;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12px;
+}
+
+.data-table th,
+.data-table td {
+  border: 1px solid var(--border-light);
+  padding: 8px;
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.data-table th {
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sort-btn {
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+
+.sort-btn:hover {
+  color: var(--brand-primary);
+}
+
+.cell-input {
+  display: block;
+  width: 100%;
+  min-height: 38px;
+  height: auto;
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 6px;
+  padding: 6px 8px;
+  color: var(--text-primary);
+  font: inherit;
+  line-height: 1.4;
+  overflow: visible;
+}
+
+.cell-input:focus {
+  border-color: var(--brand-primary);
+  background: var(--bg-subtle);
+  outline: none;
+}
+
+.cell-input.readonly {
+  color: var(--text-secondary);
+}
+
+.cell-select {
+  appearance: none;
+  background: var(--bg-surface);
+}
+
+.cell-textarea {
+  resize: none;
+  overflow: hidden;
+  height: auto !important;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.lookup-field {
+  position: relative;
+}
+
+.lookup-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 220;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-md);
+}
+
+.lookup-item,
+.lookup-empty {
+  width: 100%;
+  padding: 9px 10px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  color: var(--text-primary);
+}
+
+.lookup-item {
+  cursor: pointer;
+}
+
+.lookup-item:hover {
+  background: var(--bg-subtle);
+}
+
+.lookup-empty {
+  color: var(--text-tertiary);
+}
+
+.lookup-inn {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.tables-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+}
+
+.tables-grid.two-tables {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.18fr);
+}
+
+.stage-three .table-card {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.stage-three .table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.invoice-footer {
+  border-top: 1px solid var(--border-light);
+  background: var(--bg-surface);
+  padding: 10px 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.footer-left,
+.footer-right {
+  display: flex;
+  gap: 10px;
+}
+
+.back-link-btn {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  min-height: 30px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  margin-right: 4px;
+}
+
+.back-link-btn:hover {
+  border-color: var(--brand-primary);
+  color: var(--brand-primary);
+}
+
+.title-link:hover {
+  text-decoration: underline;
+}
+
+.inline-state {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.inline-state.error {
+  color: var(--danger-text);
+}
+
+.danger-btn {
+  border-color: color-mix(in srgb, var(--danger-text) 35%, var(--border-light));
+  color: var(--danger-text);
+}
+
+.match-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.match-head-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mode-select {
+  min-height: 36px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  padding: 0 10px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.data-table col.col-narrow {
+  width: 56px;
+}
+
+.data-table col.col-name-wide {
+  width: auto;
+}
+
+.data-table col.col-small {
+  width: 100px;
+}
+
+.stage2-invoice-table col.col-narrow:last-child {
+  width: 52px;
+}
+
+.stage3-request-table col.col-narrow,
+.stage3-invoice-table col.col-narrow {
+  width: 52px;
+}
+
+.stage3-request-table col.col-name-wide {
+  width: 42%;
+}
+
+.stage3-invoice-table col.col-name-wide {
+  width: 40%;
+}
+
+.stage3-invoice-table col.col-small {
+  width: 98px;
+}
+
+.group-badge {
+  min-width: 32px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid #bfdbfe;
+  background: #dbeafe;
+  color: #1d4ed8;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+}
+
+.group-badge.empty {
+  border-color: var(--border-light);
+  background: var(--bg-subtle);
+  color: var(--text-tertiary);
+}
+
+.group-badge.active {
+  border-color: #2563eb;
+  background: #2563eb;
+  color: #fff;
+}
+
+.data-table tr.selected td {
+  background: color-mix(in srgb, var(--brand-primary) 7%, #fff);
+}
+
+.table-empty {
+  text-align: center;
+  color: var(--text-tertiary);
+}
+
+.hidden-input {
+  display: none;
+}
+
+.upload-btn {
+  border: 1px solid var(--brand-primary);
+  border-radius: var(--radius-sm);
+  background: var(--brand-light);
+  color: var(--brand-primary);
+  min-height: 26px;
+  padding: 0 8px;
+  font-size: 11px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.upload-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.pdf-file-name {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  padding: 4px 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border-light);
+}
+
+.print-line {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  padding-top: 6px;
+  border-top: 1px dashed var(--border-light);
+  margin-top: 4px;
+  font-family: monospace;
+}
+
+.lookup-wrap {
+  position: relative;
+}
+
+.lookup-list {
+  margin-top: 6px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-md);
+  max-height: 240px;
+  overflow: auto;
+}
+
+@media (max-width: 1280px) {
+  .tables-grid.two-tables,
+  .stage-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 1200px) {
+  .stage-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .tables-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 1512px) {
+  .stage3-invoice-table col.col-name-wide {
+    width: 38%;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>

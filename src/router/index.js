@@ -16,6 +16,7 @@ import InvoiceComparisonView from '../views/InvoiceComparisonView.vue'
 import InvoicesRegistryView from '../views/InvoicesRegistryView.vue'
 import InvoiceDetailView from '../views/InvoiceDetailView.vue'
 import InvoiceDeliveryPlanView from '../views/InvoiceDeliveryPlanView.vue'
+import InvoicesGroupedView from '../views/InvoicesGroupedView.vue'
 import WarehousesView from '../views/WarehousesView.vue'
 import WarehouseDetailView from '../views/WarehouseDetailView.vue'
 import NomenclatureFormView from '../views/NomenclatureFormView.vue'
@@ -119,6 +120,11 @@ const router = createRouter({
       path: '/invoices',
       name: 'invoices-registry',
       component: InvoicesRegistryView,
+    },
+    {
+      path: '/invoices/groups',
+      name: 'invoices-groups',
+      component: InvoicesGroupedView,
     },
     {
       path: '/deals',

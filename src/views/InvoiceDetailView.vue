@@ -55,6 +55,67 @@ const savingComment = ref(false)
 const FIXED_PLANNING_USER_ID = '8f1d6ffd-6652-4719-a426-5b21412d7c56'
 const FIXED_PAYMENT_USER_ID = '06968a8b-e24c-4099-998d-3d4c16ebc63a'
 
+const counterparties = ref([])
+const counterpartiesLoading = ref(false)
+const allUsers = ref([])
+const allUsersLoading = ref(false)
+const objects = ref([])
+const objectsLoading = ref(false)
+const projectObjects = ref([])
+const projectObjectsLoading = ref(false)
+
+const supplierOpen = ref(false)
+const supplierQuery = ref('')
+const payerOpen = ref(false)
+const payerQuery = ref('')
+const projectObjectOpen = ref(false)
+const projectObjectQuery = ref('')
+const fromByUserOpen = ref(false)
+const fromByUserQuery = ref('')
+
+const filteredSuppliers = computed(() => {
+  const q = supplierQuery.value.trim().toLowerCase()
+  if (!q) return counterparties.value
+  return counterparties.value.filter((item) =>
+    String(item.name || '').toLowerCase().includes(q)
+    || String(item.inn || '').toLowerCase().includes(q))
+})
+
+const filteredPayers = computed(() => {
+  const q = payerQuery.value.trim().toLowerCase()
+  if (!q) return counterparties.value
+  return counterparties.value.filter((item) =>
+    String(item.name || '').toLowerCase().includes(q)
+    || String(item.inn || '').toLowerCase().includes(q))
+})
+
+const combinedProjectItems = computed(() => {
+  const items = []
+  for (const obj of objects.value) {
+    items.push({ id: obj.id, name: obj.short_name || obj.name || '—', type: 'object' })
+  }
+  for (const proj of projectObjects.value) {
+    items.push({ id: proj.id, name: proj.name || '—', type: 'object_levels_id' })
+  }
+  return items
+})
+
+const filteredProjectObjects = computed(() => {
+  const q = projectObjectQuery.value.trim().toLowerCase()
+  if (!q) return combinedProjectItems.value
+  return combinedProjectItems.value.filter((item) =>
+    String(item.name || '').toLowerCase().includes(q))
+})
+
+const filteredFromByUsers = computed(() => {
+  const q = fromByUserQuery.value.trim().toLowerCase()
+  if (!q) return allUsers.value
+  return allUsers.value.filter((user) => {
+    const full = [user.surname, user.name, user.patronymic, user.fio, user.short_fio].filter(Boolean).join(' ').toLowerCase()
+    return full.includes(q)
+  })
+})
+
 const normalizeArray = (payload) => {
   if (Array.isArray(payload)) return payload
   return payload?.items || payload?.data || payload?.results || []
@@ -120,6 +181,39 @@ const canRespondInvoice = computed(() =>
   && Boolean(currentUserId.value)
   && Boolean(myPendingInvoiceApproval.value?.id)
 )
+
+const myInvoiceApproval = computed(() =>
+  approvals.value.find((log) =>
+    String(log?.user_id || '') === currentUserId.value)
+)
+
+const canCancelDecision = computed(() =>
+  Boolean(invoice.value?.id)
+  && Boolean(currentUserId.value)
+  && Boolean(myInvoiceApproval.value?.id)
+  && String(myInvoiceApproval.value?.status_name || '').toLowerCase() !== 'pending'
+)
+
+const isUserPlanner = computed(() =>
+  planningUsers.value.some((item) => String(item?.user_id || '') === currentUserId.value))
+
+const isUserPayer = computed(() =>
+  paymentUsers.value.some((item) => String(item?.user_id || '') === currentUserId.value))
+
+const isUserApprover = computed(() =>
+  approvals.value.some((log) => String(log?.user_id || '') === currentUserId.value))
+
+const canEditInvoice = computed(() => {
+  const rawStatus = invoice.value?.status
+  const statusId = String(
+    (rawStatus && typeof rawStatus === 'object' ? rawStatus.id : rawStatus)
+      || invoice.value?.status_id
+      || ''
+  )
+  if (statusId !== STATUS_ID_INVOICE_APPROVED && statusId !== STATUS_ID_INVOICE_PAID) return true
+  return isUserPlanner.value || isUserPayer.value || isUserApprover.value
+})
+
 const canOpenPaymentsTab = computed(() => {
   const userId = currentUserId.value
   if (userId) {
@@ -307,6 +401,21 @@ const onPaymentPaidToggle = (row) => {
   onPaymentRowInput()
 }
 
+const deletePaymentRow = async (row) => {
+  if (!row?.id || !invoice.value?.id) return
+  if (!isUserPlanner.value) return
+  try {
+    const res = await fetch(
+      `/apisup/supply/invoices/${encodeURIComponent(String(invoice.value.id))}/payments/${encodeURIComponent(String(row.id))}`,
+      { method: 'DELETE', credentials: 'include' }
+    )
+    if (!res.ok) throw new Error('payment delete failed')
+    await loadInvoice()
+  } catch {
+    error.value = 'Не удалось удалить платёж.'
+  }
+}
+
 const revokePdfUrl = () => {
   invoiceFileDownloadUrl.value = ''
   if (invoicePdfUrl.value) {
@@ -484,6 +593,146 @@ const saveComment = async () => {
 const startEditComment = () => {
   invoice.value._commentBackup = invoice.value.comment
   editingComment.value = true
+}
+
+const loadCounterparties = async () => {
+  counterpartiesLoading.value = true
+  try {
+    let res = await fetch('/apiref/ref/counterparties', { credentials: 'include' })
+    if (!res.ok) {
+      res = await fetch('/apiref/ref/counterparties/summary', { credentials: 'include' })
+    }
+    if (!res.ok) throw new Error('counterparties load failed')
+    counterparties.value = normalizeArray(await res.json())
+      .map((item) => {
+        const id = item?.id || item?.counterparty_id || item?.uuid || ''
+        return {
+          id,
+          name: item?.name || item?.short_name || item?.caption || '—',
+          inn: item?.inn || '',
+        }
+      })
+      .filter((item) => item.id)
+  } catch {
+    counterparties.value = []
+  } finally {
+    counterpartiesLoading.value = false
+  }
+}
+
+const loadAllUsers = async () => {
+  allUsersLoading.value = true
+  try {
+    const res = await fetch('/api/as/users/all', { credentials: 'include' })
+    if (!res.ok) throw new Error('users load failed')
+    allUsers.value = normalizeArray(await res.json())
+  } catch {
+    allUsers.value = []
+  } finally {
+    allUsersLoading.value = false
+  }
+}
+
+const loadProjectObjects = async () => {
+  projectObjectsLoading.value = true
+  try {
+    const res = await fetch('/apisup/supply/request-objects/my', { credentials: 'include' })
+    if (!res.ok) throw new Error('project objects load failed')
+    projectObjects.value = normalizeArray(await res.json())
+  } catch {
+    projectObjects.value = []
+  } finally {
+    projectObjectsLoading.value = false
+  }
+}
+
+const loadObjects = async () => {
+  objectsLoading.value = true
+  try {
+    const res = await fetch('/apiref/ref/objects', { credentials: 'include' })
+    if (!res.ok) throw new Error('objects load failed')
+    objects.value = normalizeArray(await res.json())
+  } catch {
+    objects.value = []
+  } finally {
+    objectsLoading.value = false
+  }
+}
+
+const selectSupplier = async (item) => {
+  supplierQuery.value = item.name
+  supplierOpen.value = false
+  if (!invoice.value?.id || !item.id) return
+  try {
+    const res = await fetch(`/apisup/supply/invoices/${encodeURIComponent(String(invoice.value.id))}`, {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_id: String(item.id) }),
+    })
+    if (!res.ok) throw new Error('provider update failed')
+    await loadInvoice()
+  } catch {
+    error.value = 'Не удалось изменить поставщика.'
+  }
+}
+
+const selectPayer = async (item) => {
+  payerQuery.value = item.name
+  payerOpen.value = false
+  if (!invoice.value?.id || !item.id) return
+  try {
+    const res = await fetch(`/apisup/supply/invoices/${encodeURIComponent(String(invoice.value.id))}`, {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ payer_id: String(item.id) }),
+    })
+    if (!res.ok) throw new Error('payer update failed')
+    await loadInvoice()
+  } catch {
+    error.value = 'Не удалось изменить плательщика.'
+  }
+}
+
+const selectProjectObject = async (item) => {
+  projectObjectQuery.value = item.name
+  projectObjectOpen.value = false
+  if (!invoice.value?.id || !item.id) return
+  try {
+    const res = await fetch(`/apisup/supply/invoices/${encodeURIComponent(String(invoice.value.id))}`, {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        object_levels_id: String(item.id),
+        object_type: item.type,
+      }),
+    })
+    if (!res.ok) throw new Error('project update failed')
+    await loadInvoice()
+  } catch {
+    error.value = 'Не удалось изменить проект.'
+  }
+}
+
+const selectFromByUser = async (item) => {
+  const userId = String(item.id || item.user_id || '')
+  fromByUserQuery.value = [item.surname, item.name, item.patronymic].filter(Boolean).join(' ') || item.fio || item.short_fio || ''
+  fromByUserOpen.value = false
+  if (!invoice.value?.id || !userId) return
+  try {
+    const res = await fetch(`/apisup/supply/invoices/${encodeURIComponent(String(invoice.value.id))}`, {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from_by: userId }),
+    })
+    if (!res.ok) throw new Error('from_by update failed')
+    await loadInvoice()
+  } catch {
+    error.value = 'Не удалось изменить отправителя.'
+  }
 }
 
 const loadInvoice = async () => {
@@ -860,6 +1109,18 @@ const handleWindowClick = (event) => {
   if (inlineApproverOpen.value && !target.closest('.approvals-add')) {
     inlineApproverOpen.value = false
   }
+  if (supplierOpen.value && !target.closest('.lookup-wrap')) {
+    supplierOpen.value = false
+  }
+  if (payerOpen.value && !target.closest('.lookup-wrap')) {
+    payerOpen.value = false
+  }
+  if (projectObjectOpen.value && !target.closest('.lookup-wrap')) {
+    projectObjectOpen.value = false
+  }
+  if (fromByUserOpen.value && !target.closest('.lookup-wrap')) {
+    fromByUserOpen.value = false
+  }
 }
 
 const openInvoiceEdit = () => {
@@ -913,6 +1174,48 @@ const respondInvoice = async (statusName) => {
   }
 }
 
+const cancelDecision = async () => {
+  if (!canCancelDecision.value || !myInvoiceApproval.value?.id || !invoice.value?.id) return
+  decisionLoading.value = true
+  try {
+    const dateResponse = new Date().toISOString()
+    const res = await fetch(
+      `/apisup/supply/invoices/${encodeURIComponent(String(invoice.value.id))}/logs/${encodeURIComponent(String(myInvoiceApproval.value.id))}`,
+      {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'approval',
+          status_name: 'pending',
+          date_response: dateResponse,
+        }),
+      }
+    )
+    if (!res.ok) throw new Error('cancel decision failed')
+
+    await loadInvoice()
+
+    const allApprovals = approvals.value.filter((log) =>
+      String(log?.status_name || '').toLowerCase() !== 'removed')
+    const pending = allApprovals.filter((log) =>
+      String(log?.status_name || '').toLowerCase() === 'pending')
+    if (allApprovals.length > 0 && pending.length / allApprovals.length > 0.5) {
+      await fetch(`/apisup/supply/invoices/${encodeURIComponent(String(invoice.value.id))}`, {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: STATUS_ID_INVOICE_NEW }),
+      })
+      await loadInvoice()
+    }
+  } catch {
+    error.value = 'Не удалось отменить решение.'
+  } finally {
+    decisionLoading.value = false
+  }
+}
+
 const setTab = (tab) => {
   activeTab.value = tab
   router.replace({
@@ -938,6 +1241,14 @@ watch(() => route.query.tab, (tab) => {
   }
 })
 
+watch(() => invoice.value, (data) => {
+  if (!data) return
+  supplierQuery.value = data.provider?.short_name || data.provider_name || ''
+  payerQuery.value = data.payer?.short_name || data.payer_name || ''
+  fromByUserQuery.value = data.from_by_user?.short_fio || ''
+  projectObjectQuery.value = data.object_name || data.object_short_name || data.project_name || ''
+}, { immediate: true })
+
 watch(canOpenPaymentsTab, (allowed) => {
   if (allowed && String(route.query.tab || '').toLowerCase() === 'payments') {
     activeTab.value = 'payments'
@@ -951,6 +1262,12 @@ watch(canOpenPaymentsTab, (allowed) => {
 onMounted(() => {
   window.addEventListener('mousedown', handleWindowClick)
   loadInvoice()
+  Promise.all([
+    loadCounterparties(),
+    loadAllUsers(),
+    loadProjectObjects(),
+    loadObjects(),
+  ])
   const tab = String(route.query.tab || '').toLowerCase()
   if (tab === 'payments' && canOpenPaymentsTab.value) {
     activeTab.value = 'payments'
@@ -1008,9 +1325,27 @@ onBeforeUnmount(() => {
         <section class="info-grid">
           <div class="info-item">
             <span class="block-title-small">Плательщик</span>
-            <div class="kv-row">
-              <span class="label">Название</span>
-              <a href="#" class="value-link" @click.prevent="openCounterparty(invoice.payer_id)">{{ invoice.payer?.short_name || '—' }}</a>
+            <div class="lookup-wrap">
+              <input
+                v-model="payerQuery"
+                type="text"
+                class="form-input inline-lookup-input"
+                placeholder="Выберите плательщика"
+                :disabled="!canEditInvoice"
+                @focus="canEditInvoice && (payerOpen = true)"
+                @input="canEditInvoice && (payerOpen = true)"
+              >
+              <div v-if="payerOpen" class="lookup-list">
+                <div v-if="counterpartiesLoading" class="lookup-empty">Загрузка...</div>
+                <button
+                  v-for="item in filteredPayers"
+                  :key="item.id"
+                  type="button"
+                  class="lookup-item"
+                  @click="selectPayer(item)"
+                >{{ item.name }} <span v-if="item.inn" class="lookup-inn">({{ item.inn }})</span></button>
+                <div v-if="!counterpartiesLoading && !filteredPayers.length" class="lookup-empty">Ничего не найдено</div>
+              </div>
             </div>
             <div class="kv-row">
               <span class="label">ИНН</span>
@@ -1027,9 +1362,27 @@ onBeforeUnmount(() => {
           </div>
           <div class="info-item">
             <span class="block-title-small">Поставщик</span>
-            <div class="kv-row">
-              <span class="label">Название</span>
-              <a href="#" class="value-link" @click.prevent="openCounterparty(invoice.provider_id)">{{ invoice.provider?.short_name || '—' }}</a>
+            <div class="lookup-wrap">
+              <input
+                v-model="supplierQuery"
+                type="text"
+                class="form-input inline-lookup-input"
+                :placeholder="invoice.provider?.short_name || 'Выберите поставщика'"
+                :disabled="!canEditInvoice"
+                @focus="canEditInvoice && (supplierOpen = true)"
+                @input="canEditInvoice && (supplierOpen = true)"
+              >
+              <div v-if="supplierOpen" class="lookup-list">
+                <div v-if="counterpartiesLoading" class="lookup-empty">Загрузка...</div>
+                <button
+                  v-for="item in filteredSuppliers"
+                  :key="item.id"
+                  type="button"
+                  class="lookup-item"
+                  @click="selectSupplier(item)"
+                >{{ item.name }} <span v-if="item.inn" class="lookup-inn">({{ item.inn }})</span></button>
+                <div v-if="!counterpartiesLoading && !filteredSuppliers.length" class="lookup-empty">Ничего не найдено</div>
+              </div>
             </div>
             <div class="kv-row">
               <span class="label">ИНН</span>
@@ -1046,12 +1399,53 @@ onBeforeUnmount(() => {
           </div>
           <div class="info-item">
             <span class="label">Проект</span>
-            <a v-if="projectName" href="#" class="value-link" @click.prevent="openProject">{{ projectName }}</a>
-            <span v-else class="value">{{ invoice.object_name || invoice.object_short_name || invoice.project_name || '—' }}</span>
+            <div class="lookup-wrap">
+              <input
+                v-model="projectObjectQuery"
+                type="text"
+                class="form-input inline-lookup-input"
+                :placeholder="invoice.object_name || invoice.object_short_name || invoice.project_name || 'Выберите проект'"
+                :disabled="!canEditInvoice"
+                @focus="canEditInvoice && (projectObjectOpen = true)"
+                @input="canEditInvoice && (projectObjectOpen = true)"
+              >
+              <div v-if="projectObjectOpen" class="lookup-list">
+                <div v-if="projectObjectsLoading || objectsLoading" class="lookup-empty">Загрузка...</div>
+                <button
+                  v-for="item in filteredProjectObjects"
+                  :key="`${item.type}-${item.id}`"
+                  type="button"
+                  class="lookup-item"
+                  @click="selectProjectObject(item)"
+                >{{ item.name }}</button>
+                <div v-if="!projectObjectsLoading && !objectsLoading && !filteredProjectObjects.length" class="lookup-empty">Ничего не найдено</div>
+              </div>
+            </div>
           </div>
           <div class="info-item">
             <span class="label">От кого</span>
-            <span class="value">{{ invoice.from_by_user?.short_fio || '—' }}</span>
+            <div class="lookup-wrap">
+              <input
+                v-model="fromByUserQuery"
+                type="text"
+                class="form-input inline-lookup-input"
+                :placeholder="invoice.from_by_user?.short_fio || 'Выберите пользователя'"
+                :disabled="!canEditInvoice"
+                @focus="canEditInvoice && (fromByUserOpen = true)"
+                @input="canEditInvoice && (fromByUserOpen = true)"
+              >
+              <div v-if="fromByUserOpen" class="lookup-list">
+                <div v-if="allUsersLoading" class="lookup-empty">Загрузка...</div>
+                <button
+                  v-for="item in filteredFromByUsers"
+                  :key="item.id"
+                  type="button"
+                  class="lookup-item"
+                  @click="selectFromByUser(item)"
+                >{{ [item.surname, item.name, item.patronymic].filter(Boolean).join(' ') || item.fio || item.short_fio || '—' }}</button>
+                <div v-if="!allUsersLoading && !filteredFromByUsers.length" class="lookup-empty">Ничего не найдено</div>
+              </div>
+            </div>
           </div>
           <div class="info-item">
             <span class="label">Заявка</span>
@@ -1074,7 +1468,7 @@ onBeforeUnmount(() => {
             <div v-else class="comment-display">
               <span class="value">{{ invoice.comment || '—' }}</span>
               <button
-                v-if="invoice.comment"
+                v-if="canEditInvoice && invoice.comment"
                 type="button"
                 class="comment-edit-btn"
                 title="Редактировать комментарий"
@@ -1083,7 +1477,7 @@ onBeforeUnmount(() => {
                 <i class="fas fa-pen"></i>
               </button>
               <button
-                v-else
+                v-else-if="canEditInvoice && !invoice.comment"
                 type="button"
                 class="comment-add-btn"
                 @click="startEditComment"
@@ -1234,7 +1628,7 @@ onBeforeUnmount(() => {
           <button v-if="canSendForApproval" type="button" class="action-btn action-send" @click="openSendModal">
             Передать на согласование
           </button>
-          <button type="button" class="action-btn action-edit" @click="openInvoiceEdit">
+          <button type="button" class="action-btn action-edit" :disabled="!canEditInvoice" @click="openInvoiceEdit">
             Изменить
           </button>
           <button
@@ -1254,6 +1648,15 @@ onBeforeUnmount(() => {
             @click="respondInvoice('rejected')"
           >
             Не согласовать
+          </button>
+          <button
+            v-if="canCancelDecision"
+            type="button"
+            class="action-btn action-cancel"
+            :disabled="decisionLoading"
+            @click="cancelDecision"
+          >
+            Отменить решение
           </button>
         </div>
 
@@ -1316,6 +1719,7 @@ onBeforeUnmount(() => {
                 <div>Дата оплаты</div>
                 <div>Кто оплатил</div>
                 <div>Файл платежа</div>
+                <div v-if="isUserPlanner"></div>
               </div>
               <div class="payment-rows">
                 <div v-for="(row, idx) in paymentRows" :key="row.id || `new-${idx}`" class="payment-row" :class="{ locked: isPaymentLocked(row) }">
@@ -1399,6 +1803,14 @@ onBeforeUnmount(() => {
                     </template>
                     <span v-else class="file-icon-wrap file-icon-empty">—</span>
                   </div>
+                  <button
+                    v-if="isUserPlanner && row.id && !isPaymentLocked(row)"
+                    class="btn btn-outline-danger btn-sm payment-delete-btn"
+                    @click="deletePaymentRow(row)"
+                    title="Удалить платёж"
+                  >
+                    <i class="fas fa-trash-alt"></i>
+                  </button>
                   <span v-if="isPaymentLocked(row)" class="locked-badge">Зафиксировано</span>
                 </div>
               </div>
@@ -1523,7 +1935,7 @@ onBeforeUnmount(() => {
   border: 1px solid var(--border-light);
   background: var(--bg-surface);
   color: var(--text-secondary);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   padding: 6px 10px;
   display: inline-flex;
   align-items: center;
@@ -1533,8 +1945,9 @@ onBeforeUnmount(() => {
 }
 
 .back-btn:hover {
-  background: var(--bg-subtle);
-  color: var(--text-primary);
+  border-color: var(--brand-primary);
+  color: var(--brand-primary);
+  background: var(--bg-surface);
 }
 
 .chat-btn {
@@ -1601,7 +2014,7 @@ onBeforeUnmount(() => {
 
 .action-btn {
   border: 1px solid var(--border-light);
-  background: #fff;
+  background: var(--bg-surface);
   color: var(--text-primary);
   border-radius: 8px;
   padding: 7px 12px;
@@ -1628,6 +2041,12 @@ onBeforeUnmount(() => {
   border-color: #ef4444;
   color: #b91c1c;
   background: #fef2f2;
+}
+
+.action-cancel {
+  border-color: #f59e0b;
+  color: #92400e;
+  background: #fffbeb;
 }
 
 .action-send {
@@ -1659,7 +2078,7 @@ onBeforeUnmount(() => {
 .tab-btn.active {
   border-color: var(--brand-primary);
   color: var(--brand-primary);
-  background: #eff6ff;
+  background: var(--brand-light);
 }
 
 .info-grid {
@@ -1848,7 +2267,7 @@ onBeforeUnmount(() => {
   height: 28px;
   border-radius: 8px;
   border: 1px dashed var(--brand-primary);
-  background: #eff6ff;
+  background: var(--brand-light);
   color: var(--brand-primary);
   font-weight: 700;
   font-size: 18px;
@@ -1946,19 +2365,19 @@ onBeforeUnmount(() => {
 }
 
 .payment-info-card {
-  background: #fff;
+  background: var(--bg-surface);
 }
 
 .payments-editor {
   border: 1px solid var(--border-light);
   border-radius: 12px;
-  background: #fff;
+  background: var(--bg-surface);
   padding: 10px;
 }
 
 .payment-row-head {
   display: grid;
-  grid-template-columns: 120px 130px 140px 120px 180px 160px 110px 120px 160px;
+  grid-template-columns: 120px 130px 140px 120px 180px 160px 110px 120px 160px 140px 50px;
   gap: 10px;
   font-size: 12px;
   color: var(--text-secondary);
@@ -1974,7 +2393,7 @@ onBeforeUnmount(() => {
 
 .payment-row {
   display: grid;
-  grid-template-columns: 120px 130px 140px 120px 180px 160px 110px 120px 160px 140px;
+  grid-template-columns: 120px 130px 140px 120px 180px 160px 110px 120px 160px 140px 50px;
   gap: 10px;
   align-items: center;
   padding: 6px;
@@ -2062,6 +2481,23 @@ onBeforeUnmount(() => {
   padding-left: 2px;
 }
 
+.payment-delete-btn {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.payment-delete-btn:hover {
+  background: #fee2e2;
+  border-color: #ef4444;
+  color: #dc2626;
+}
+
 .payments-summary {
   margin-top: 12px;
   border: 1px solid var(--border-light);
@@ -2070,7 +2506,7 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
-  background: #fff;
+  background: var(--bg-surface);
 }
 
 .summary-item {
@@ -2081,7 +2517,7 @@ onBeforeUnmount(() => {
   color: var(--text-primary);
   padding: 8px;
   border-radius: 8px;
-  background: #ffffff;
+  background: var(--bg-surface);
   border: 1px solid var(--border-light);
 }
 
@@ -2133,7 +2569,7 @@ onBeforeUnmount(() => {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(15, 23, 42, 0.35);
+  background: color-mix(in srgb, #0f172a 38%, transparent);
   z-index: 1200;
   display: flex;
   align-items: center;
@@ -2145,11 +2581,11 @@ onBeforeUnmount(() => {
   width: min(680px, 100%);
   max-height: 85vh;
   overflow: visible;
-  background: #fff;
+  background: var(--bg-surface);
   border: 1px solid var(--border-light);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   padding: 14px;
-  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.22);
+  box-shadow: var(--shadow-md);
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -2173,7 +2609,7 @@ onBeforeUnmount(() => {
   height: 30px;
   border: 1px solid var(--border-light);
   border-radius: 8px;
-  background: #fff;
+  background: var(--bg-surface);
   color: var(--text-secondary);
   cursor: pointer;
 }
@@ -2190,7 +2626,7 @@ onBeforeUnmount(() => {
   z-index: 1301;
   border: 1px solid var(--border-light);
   border-radius: 10px;
-  background: #fff;
+  background: var(--bg-surface);
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.16);
   max-height: 240px;
   overflow: auto;
@@ -2200,7 +2636,7 @@ onBeforeUnmount(() => {
 .approver-option {
   width: 100%;
   border: 0;
-  background: #fff;
+  background: var(--bg-surface);
   border-radius: 8px;
   padding: 8px 10px;
   display: flex;
@@ -2211,7 +2647,7 @@ onBeforeUnmount(() => {
 }
 
 .approver-option:hover {
-  background: #f8fafc;
+  background: var(--bg-subtle);
 }
 
 .modal-selected {
@@ -2327,5 +2763,68 @@ onBeforeUnmount(() => {
 .comment-add-btn:hover {
   border-color: var(--brand-primary);
   color: var(--brand-primary);
+}
+
+.lookup-wrap {
+  position: relative;
+  margin-bottom: 6px;
+}
+
+.lookup-list {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 50;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  max-height: 220px;
+  overflow: auto;
+}
+
+.lookup-item {
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.lookup-item:hover {
+  background: var(--bg-subtle);
+}
+
+.lookup-empty {
+  padding: 10px;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 13px;
+}
+
+.lookup-inn {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.inline-lookup-input {
+  width: 100%;
+  min-height: 36px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-light);
+  background: var(--bg-subtle);
+  padding: 0 10px;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.inline-lookup-input:focus {
+  border-color: var(--brand-primary);
+  outline: none;
 }
 </style>
