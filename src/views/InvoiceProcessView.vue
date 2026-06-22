@@ -403,7 +403,11 @@ const filteredApproverOptions = computed(() => {
 })
 
 const finishProcess = async () => {
-  // После завершения распознавания/сопоставления не отправляем счет на согласование автоматически.
+  const requestId = String(route.query.request_id || '')
+  if (requestId) {
+    router.push(`/requests/${encodeURIComponent(requestId)}`)
+    return
+  }
   const id = String(invoiceId.value || '')
   if (id && id !== 'new') {
     router.push(`/invoices/${encodeURIComponent(id)}`)
@@ -1865,7 +1869,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div class="tables-grid">
+        <div class="tables-grid two-tables">
           <div class="table-card">
             <div class="table-title">Позиции из заявки #{{ requestId }}</div>
             <div class="table-wrap">
@@ -2058,7 +2062,6 @@ onBeforeUnmount(() => {
         <button v-if="step > 1" class="btn" type="button" @click="prevStep">Назад</button>
         <button v-if="step < maxStep" class="btn btn-primary" type="button" @click="nextStep">Продолжить</button>
         <template v-else>
-          <button class="btn btn-primary" type="button" @click="openSendModal">Отправить на согласование</button>
           <button class="btn" type="button" @click="finishProcess">Завершить</button>
         </template>
       </div>
@@ -2788,6 +2791,25 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   overflow: auto;
+}
+
+.th-sort-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  display: inline;
+  text-align: left;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  font-size: 11px;
+}
+
+.th-sort-btn:hover {
+  color: var(--brand-primary);
 }
 
 .invoice-footer {

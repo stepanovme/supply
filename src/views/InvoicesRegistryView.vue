@@ -44,6 +44,8 @@ const selectedProjectObjectId = ref('')
 const isSupplierDropdownOpen = ref(false)
 const isPayerDropdownOpen = ref(false)
 const isProjectDropdownOpen = ref(false)
+const creatingObject = ref(false)
+const newObjectName = ref('')
 const deliveryIncluded = ref(null)
 const prepaymentRequired = ref(null)
 const prepaymentPercent = ref('')
@@ -484,6 +486,29 @@ const selectProjectObject = (item) => {
   projectQuery.value = item.name || ''
   isProjectDropdownOpen.value = false
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+}
+
+const createObject = async () => {
+  const name = newObjectName.value.trim()
+  if (!name) return
+  creatingObject.value = true
+  try {
+    const res = await fetch('/apiref/ref/objects', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ short_name: name, is_active: true }),
+    })
+    if (!res.ok) throw new Error('create object failed')
+    const created = await res.json()
+    await Promise.all([loadProjectObjects(), loadObjects()])
+    selectProjectObject({ id: created.id || created.object_id, name, type: 'object' })
+  } catch {
+    projectObjectsError.value = 'Не удалось создать объект.'
+  } finally {
+    creatingObject.value = false
+    newObjectName.value = ''
+  }
 }
 
 const triggerInvoiceFilesInput = () => {
@@ -1431,22 +1456,28 @@ onBeforeUnmount(() => {
               </button>
             </div>
             <div v-if="isProjectDropdownOpen" class="lookup-list lookup-list-overlay">
-              <div v-if="projectObjectsLoading || objectsLoading" class="lookup-empty">Загрузка...</div>
-              <div v-else-if="projectObjectsError && objectsError" class="lookup-empty error">{{ projectObjectsError || objectsError }}</div>
-              <button
-                v-for="item in filteredProjectObjects"
-                :key="`${item.type}-${item.id}`"
-                class="lookup-item"
-                type="button"
-                @click="selectProjectObject(item)"
-              >
-                <span v-if="item.type === 'object'" class="item-badge">Объект</span>
-                <span v-else class="item-badge">Проект</span>
-                {{ item.name }}
-              </button>
-              <div v-if="!projectObjectsLoading && !objectsLoading && filteredProjectObjects.length === 0" class="lookup-empty">
-                Ничего не найдено
-              </div>
+              <div v-if="creatingObject" class="lookup-empty">Создание объекта...</div>
+              <template v-else-if="!creatingObject">
+                <button v-if="projectQuery.trim()" class="lookup-item create-item" type="button" @click="newObjectName = projectQuery.trim(); createObject()">
+                  + Создать объект «{{ projectQuery.trim() }}»
+                </button>
+                <div v-if="projectObjectsLoading || objectsLoading" class="lookup-empty">Загрузка...</div>
+                <div v-else-if="projectObjectsError && objectsError" class="lookup-empty error">{{ projectObjectsError || objectsError }}</div>
+                <button
+                  v-for="item in filteredProjectObjects"
+                  :key="`${item.type}-${item.id}`"
+                  class="lookup-item"
+                  type="button"
+                  @click="selectProjectObject(item)"
+                >
+                  <span v-if="item.type === 'object'" class="item-badge">Объект</span>
+                  <span v-else class="item-badge">Проект</span>
+                  {{ item.name }}
+                </button>
+                <div v-if="!projectObjectsLoading && !objectsLoading && filteredProjectObjects.length === 0 && !projectQuery.trim()" class="lookup-empty">
+                  Ничего не найдено
+                </div>
+              </template>
             </div>
           </div>
         </div>
@@ -2140,6 +2171,19 @@ tr:hover td {
   font-weight: 600;
   color: var(--brand-primary);
   border-bottom: 1px solid var(--border-light);
+}
+
+.create-item {
+  font-weight: 600;
+  color: var(--brand-primary);
+  border-bottom: 1px solid var(--border-light);
+  cursor: pointer;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.create-item:hover {
+  background: var(--bg-subtle);
 }
 
 .lookup-empty {
