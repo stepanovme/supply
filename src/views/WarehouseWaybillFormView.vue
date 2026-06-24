@@ -206,6 +206,20 @@ const displayedRows = computed(() =>
     : rows.value
 )
 
+// Дублирующиеся номенклатуры в инвентаризации
+const duplicateNomenclatureIds = computed(() => {
+  if (!isInventory.value) return new Set()
+  const seen = new Set()
+  const dupes = new Set()
+  rows.value.forEach((row) => {
+    const id = String(row.nomenclatureId || '')
+    if (!id) return
+    if (seen.has(id)) dupes.add(id)
+    else seen.add(id)
+  })
+  return dupes
+})
+
 const clearInsufficientRow = (rowId) => {
   insufficientRowIds.value = insufficientRowIds.value.filter((id) => id !== rowId)
 }
@@ -839,6 +853,15 @@ const saveCreatedObject = async () => {
 const selectSuggestion = async (row, item) => {
   if (isReceiptLocked.value) return
   const newId = String(item?.id || '')
+  // В инвентаризации запрещаем выбор дублирующейся номенклатуры
+  if (isInventory.value && newId && newId !== String(row.nomenclatureId || '')) {
+    const usedByOther = rows.value.some((r) => r.id !== row.id && String(r.nomenclatureId || '') === newId)
+    if (usedByOther) {
+      activeRowId.value = null
+      suggestions.value = []
+      return
+    }
+  }
   if (row.itemId && row.nomenclatureId && row.nomenclatureId !== newId) {
     deleteReceiptItem(row.itemId)
     row.itemId = ''
@@ -2443,7 +2466,12 @@ watch(receiptIdParam, (value) => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="row in displayedRows" :key="row.id" @contextmenu="openRowContextMenu($event, row)">
+            <tr
+              v-for="row in displayedRows"
+              :key="row.id"
+              :class="{ 'row-duplicate': isInventory && row.nomenclatureId && duplicateNomenclatureIds.has(row.nomenclatureId) }"
+              @contextmenu="openRowContextMenu($event, row)"
+            >
               <td class="name-cell">
                 <input
                   v-model="row.name"
@@ -2869,6 +2897,10 @@ watch(receiptIdParam, (value) => {
 .cell-input-error {
   background: #fef2f2;
   box-shadow: inset 0 0 0 1px #fca5a5;
+}
+
+.row-duplicate td {
+  background: #fef2f2 !important;
 }
 
 .table tr:last-child td {

@@ -11,7 +11,7 @@ import path from 'node:path'
 export default defineConfig({
   plugins: [
     vue(),
-    vueDevTools(),
+    // vueDevTools(),
   ],
   server: {
     host: '192.168.88.2',

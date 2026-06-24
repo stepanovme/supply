@@ -5,6 +5,7 @@ import TopNav from '../components/layout/TopNav.vue'
 import ChatPanel from '../components/chat/ChatPanel.vue'
 import { mainNavLinks } from '../constants/mainNav'
 import { useChatStore } from '../stores/chat'
+import { useAuthStore } from '../stores/auth'
 
 const navLinks = mainNavLinks
 const route = useRoute()
@@ -46,6 +47,22 @@ const objectDropdownOpen = ref(false)
 const unlockedSectionIndex = ref(0)
 const paymentMode = ref('cash')
 const agencyMode = ref('without_agent')
+
+// ── Deal status IDs ──────────────────────────────────────────────────────────
+const STATUS_READY_TO_CONDUCT = '662ce068-3fc1-11f1-b298-bc241127d0bd'
+const STATUS_CONDUCTED        = 'ff28cc86-1968-11f1-aa8c-bc241127d0bd'
+const STATUS_PAID             = '1ff32c4b-1312-11f1-aa8c-bc241127d0bd'
+
+// Users allowed to confirm payment
+const PAYMENT_CONFIRM_USER_IDS = [
+  '122d844d-b3be-42d9-8b5b-8a0058edb2d8',
+  '8f1d6ffd-6652-4719-a426-5b21412d7c56',
+  '680ae643-038d-488f-91c6-5b4eb2791b0c',
+  '3aae2232-5196-4b8a-bba5-99c5d131c710',
+]
+
+const authStore = useAuthStore()
+const currentUserId = computed(() => authStore.user?.id || '')
 
 const ALLOWED_COMPANY_IDS = [
   '18e8bdb8-6795-47d7-b7c5-960daab2ba56',
@@ -239,7 +256,7 @@ const agencyPfrTax = computed(() => {
 })
 
 const acquiringTax = computed(() => (
-  paymentMode.value === 'noncash' ? subtotal.value * 0.012 : 0
+  paymentMode.value === 'non-cash' ? subtotal.value * 0.012 : 0
 ))
 
 const taxes = computed(() => {
@@ -334,9 +351,94 @@ const extraTaxes = computed(() => {
 const totalTax = computed(() => taxes.value.total + acquiringTax.value)
 const netProfit = computed(() => subtotal.value - totalPurchase.value - totalTax.value)
 
-const mapDeal = (payload) => ({
+// ── Deal locking / status actions ────────────────────────────────────────────
+const isDealLocked = computed(() =>
+  deal.value?.statusId === STATUS_CONDUCTED || deal.value?.statusId === STATUS_PAID,
+)
+const canConductDeal = computed(() => deal.value?.statusId === STATUS_READY_TO_CONDUCT)
+const canConfirmPayment = computed(() =>
+  deal.value?.statusId === STATUS_CONDUCTED &&
+  PAYMENT_CONFIRM_USER_IDS.includes(currentUserId.value),
+)
+
+const conductLoading = ref(false)
+const payLoading = ref(false)
+const dealDate = ref('')
+
+const patchDealModes = async () => {
+  if (!deal.value?.id) return
+  await fetch(`/apisup/supply/deals/${encodeURIComponent(deal.value.id)}`, {
+    method: 'PATCH',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      payment_mode: paymentMode.value,
+      taxes: agencyMode.value === 'with_agent' ? 'agreement' : 'non-agreement',
+    }),
+  })
+}
+
+const patchDealStatus = async (statusId) => {
+  if (!deal.value?.id) return
+  await fetch(`/apisup/supply/deals/${encodeURIComponent(deal.value.id)}`, {
+    method: 'PATCH',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status_id: statusId }),
+  })
+}
+
+const patchDealField = async (fields) => {
+  if (!deal.value?.id) return
+  await fetch(`/apisup/supply/deals/${encodeURIComponent(deal.value.id)}`, {
+    method: 'PATCH',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(fields),
+  })
+}
+
+const onDealDateBlur = async () => {
+  await patchDealField({ date: dealDate.value || null })
+}
+
+const conductDeal = async () => {
+  conductLoading.value = true
+  try {
+    const today = new Date().toISOString().slice(0, 10)
+    await Promise.all([
+      patchDealStatus(STATUS_CONDUCTED),
+      patchDealField({ date_event: today }),
+    ])
+    if (deal.value) deal.value.statusId = STATUS_CONDUCTED
+  } finally {
+    conductLoading.value = false
+  }
+}
+
+const confirmPayment = async () => {
+  payLoading.value = true
+  try {
+    const today = new Date().toISOString().slice(0, 10)
+    await Promise.all([
+      patchDealStatus(STATUS_PAID),
+      patchDealField({ date_completed: today }),
+    ])
+    if (deal.value) deal.value.statusId = STATUS_PAID
+  } finally {
+    payLoading.value = false
+  }
+}
+
+const mapDeal = (payload) => {
+  // Sync local refs that live outside the deal object
+  paymentMode.value = payload?.payment_mode === 'non-cash' ? 'non-cash' : 'cash'
+  agencyMode.value  = (payload?.taxes === 'agreement' || payload?.taxes === 'agreement') ? 'with_agent' : 'without_agent'
+  dealDate.value = payload?.date ? String(payload.date).slice(0, 10) : ''
+  return {
   id: String(payload?.id || ''),
   title: String(payload?.name || 'Сделка'),
+  statusId: String(payload?.status_id || ''),
   statusName: String(payload?.status_name || '—'),
   sellerId: String(payload?.counterparties_from || ''),
   seller: String(payload?.counterparties_from_name || '—'),
@@ -378,7 +480,8 @@ const mapDeal = (payload) => ({
     markupPercent: calculateMarkupPercent(row?.price_purchase, row?.price),
     comment: String(row?.comment || ''),
   })),
-})
+  }
+}
 
 const deliveryTypeLabel = (value) => (value === 'internal' ? 'Внутренняя доставка' : value === 'external' ? 'Внешняя доставка' : value || '—')
 const deriveUnlockedSectionIndex = (currentDeal) => {
@@ -391,14 +494,9 @@ const deriveUnlockedSectionIndex = (currentDeal) => {
   if (Array.isArray(currentDeal.deliveries) && currentDeal.deliveries.length) index = 4
   return index
 }
-const isSectionUnlocked = (key) => {
-  if (allSectionsUnlocked.value) return true
-  const index = availableSections.findIndex((item) => item.key === key)
-  return index >= 0 && index <= unlockedSectionIndex.value
-}
+const isSectionUnlocked = (_key) => true
 
 const goToSection = (key) => {
-  if (!isSectionUnlocked(key)) return
   activeSection.value = key
 }
 
@@ -1460,7 +1558,7 @@ onBeforeUnmount(() => {
       <template v-else>
         <header class="page-head">
           <div class="page-head__main">
-            <button type="button" class="back-btn" @click="router.push('/deals')">
+            <button type="button" class="back-btn" @click="router.push(String(route.query.back || '/deals'))">
               <i class="fas fa-arrow-left"></i>
               Назад
             </button>
@@ -1506,7 +1604,12 @@ onBeforeUnmount(() => {
           <div class="info-grid">
             <label class="field-group">
               <span>Название сделки</span>
-              <input v-model="deal.title" class="field-control" type="text" @blur="onDealNameBlur">
+              <input v-model="deal.title" class="field-control" type="text" :disabled="isDealLocked" @blur="onDealNameBlur">
+            </label>
+
+            <label class="field-group">
+              <span>Дата сделки</span>
+              <input v-model="dealDate" class="field-control" type="date" :disabled="isDealLocked" @blur="onDealDateBlur">
             </label>
 
             <label class="field-group">
@@ -1517,8 +1620,9 @@ onBeforeUnmount(() => {
                   class="field-control"
                   type="text"
                   placeholder="Начните писать компанию..."
-                  @focus="onSellerInput"
-                  @input="onSellerInput"
+                  :disabled="isDealLocked"
+                  @focus="!isDealLocked && onSellerInput()"
+                  @input="!isDealLocked && onSellerInput()"
                 >
                 <div v-if="companyDropdownOpen" class="lookup-menu">
                   <button type="button" class="lookup-option lookup-option-create" @mousedown.prevent="openCreateCounterparty">
@@ -1546,8 +1650,9 @@ onBeforeUnmount(() => {
                   class="field-control"
                   type="text"
                   placeholder="Начните писать клиента..."
-                  @focus="onBuyerInput"
-                  @input="onBuyerInput"
+                  :disabled="isDealLocked"
+                  @focus="!isDealLocked && onBuyerInput()"
+                  @input="!isDealLocked && onBuyerInput()"
                 >
                 <div v-if="clientDropdownOpen" class="lookup-menu">
                   <button type="button" class="lookup-option lookup-option-create" @mousedown.prevent="openCreateCounterparty">
@@ -1574,8 +1679,9 @@ onBeforeUnmount(() => {
                   class="field-control"
                   type="text"
                   placeholder="Начните писать объект..."
-                  @focus="onObjectInput"
-                  @input="onObjectInput"
+                  :disabled="isDealLocked"
+                  @focus="!isDealLocked && onObjectInput()"
+                  @input="!isDealLocked && onObjectInput()"
                 >
                 <div v-if="objectDropdownOpen" class="lookup-menu">
                   <button
@@ -1599,7 +1705,7 @@ onBeforeUnmount(() => {
             </label>
           </div>
 
-          <div class="section-footer">
+          <div v-if="!isDealLocked" class="section-footer">
             <button type="button" class="primary-btn" :disabled="!infoReady" @click="goNextSection">Далее</button>
           </div>
         </section>
@@ -1610,7 +1716,7 @@ onBeforeUnmount(() => {
               <h2>Товары</h2>
               <p>Позиции сделки по складам с закупочной и продажной ценой.</p>
             </div>
-            <button type="button" class="primary-btn" @click="openProductPicker">Добавить товар</button>
+            <button v-if="!isDealLocked" type="button" class="primary-btn" @click="openProductPicker">Добавить товар</button>
           </div>
 
           <table class="deal-table">
@@ -1647,6 +1753,7 @@ onBeforeUnmount(() => {
                     type="number"
                     min="0"
                     step="any"
+                    :disabled="isDealLocked"
                     @blur="onProductQuantityBlur(row)"
                   >
 
@@ -1665,6 +1772,7 @@ onBeforeUnmount(() => {
                     type="number"
                     min="0"
                     step="any"
+                    :disabled="isDealLocked"
                     @input="row.priceAccount = 'free'"
                     @blur="onProductPriceBlur(row)"
                   >
@@ -1676,6 +1784,7 @@ onBeforeUnmount(() => {
                     :class="{ 'field-control-negative': normalizeMoney(row.markupPercent) < 0 }"
                     type="number"
                     step="any"
+                    :disabled="isDealLocked"
                     @blur="onProductMarkupBlur(row)"
                   >
                 </td>
@@ -1683,6 +1792,7 @@ onBeforeUnmount(() => {
                   <select
                     v-model="row.priceAccount"
                     class="field-control"
+                    :disabled="isDealLocked"
                     @change="onPriceAccountChange(row)"
                   >
                     <option v-for="option in PRICE_ACCOUNT_OPTIONS" :key="option.value" :value="option.value">
@@ -1699,7 +1809,7 @@ onBeforeUnmount(() => {
             </tbody>
           </table>
 
-          <div class="section-footer">
+          <div v-if="!isDealLocked" class="section-footer">
             <button type="button" class="primary-btn" @click="goNextSection">Далее</button>
           </div>
         </section>
@@ -1710,7 +1820,7 @@ onBeforeUnmount(() => {
               <h2>Услуги</h2>
               <p>Услуги сделки с закупочной и продажной ценой.</p>
             </div>
-            <button type="button" class="primary-btn" @click="createDealService">Добавить услугу</button>
+            <button v-if="!isDealLocked" type="button" class="primary-btn" @click="createDealService">Добавить услугу</button>
           </div>
 
           <table class="deal-table">
@@ -1730,15 +1840,15 @@ onBeforeUnmount(() => {
             <tbody>
               <tr v-for="row in deal.services" :key="row.id" @contextmenu="openServiceContextMenu($event, row)">
                 <td>
-                  <input v-model="row.name" class="field-control" type="text" @blur="onServiceFieldBlur(row)">
+                  <input v-model="row.name" class="field-control" type="text" :disabled="isDealLocked" @blur="onServiceFieldBlur(row)">
                   <small v-if="serviceSavingMap[row.id]">Сохраняем...</small>
                 </td>
-                <td><input v-model="row.unitName" class="field-control" type="text" @blur="onServiceFieldBlur(row)"></td>
+                <td><input v-model="row.unitName" class="field-control" type="text" :disabled="isDealLocked" @blur="onServiceFieldBlur(row)"></td>
                 <td>
-                  <input v-model.number="row.quantity" class="field-control qty-input" type="number" min="0" step="any" @blur="onServiceFieldBlur(row)">
+                  <input v-model.number="row.quantity" class="field-control qty-input" type="number" min="0" step="any" :disabled="isDealLocked" @blur="onServiceFieldBlur(row)">
                 </td>
-                <td><input v-model.number="row.pricePurchase" class="field-control price-input" type="number" min="0" step="any" @blur="onServiceFieldBlur(row)"></td>
-                <td><input v-model.number="row.price" class="field-control price-input" type="number" min="0" step="any" @blur="onServiceFieldBlur(row)"></td>
+                <td><input v-model.number="row.pricePurchase" class="field-control price-input" type="number" min="0" step="any" :disabled="isDealLocked" @blur="onServiceFieldBlur(row)"></td>
+                <td><input v-model.number="row.price" class="field-control price-input" type="number" min="0" step="any" :disabled="isDealLocked" @blur="onServiceFieldBlur(row)"></td>
                 <td>
                   <input
                     v-model.number="row.markupPercent"
@@ -1746,6 +1856,7 @@ onBeforeUnmount(() => {
                     :class="{ 'field-control-negative': normalizeMoney(row.markupPercent) < 0 }"
                     type="number"
                     step="any"
+                    :disabled="isDealLocked"
                     @blur="onServiceMarkupBlur(row)"
                   >
                 </td>
@@ -1759,7 +1870,7 @@ onBeforeUnmount(() => {
             </tbody>
           </table>
 
-          <div class="section-footer">
+          <div v-if="!isDealLocked" class="section-footer">
             <button type="button" class="primary-btn" @click="goNextSection">Далее</button>
           </div>
         </section>
@@ -1770,7 +1881,7 @@ onBeforeUnmount(() => {
               <h2>Доставка</h2>
               <p>Внутренняя или внешняя доставка с закупочной и продажной стоимостью.</p>
             </div>
-            <button type="button" class="primary-btn" @click="createDealDelivery">Добавить доставку</button>
+            <button v-if="!isDealLocked" type="button" class="primary-btn" @click="createDealDelivery">Добавить доставку</button>
           </div>
 
           <table class="deal-table">
@@ -1786,12 +1897,12 @@ onBeforeUnmount(() => {
             <tbody>
               <tr v-for="row in deal.deliveries" :key="row.id" @contextmenu="openDeliveryContextMenu($event, row)">
                 <td>
-                  <select v-model="row.type" class="field-control" @change="onDeliveryFieldBlur(row)">
+                  <select v-model="row.type" class="field-control" :disabled="isDealLocked" @change="onDeliveryFieldBlur(row)">
                     <option value="internal">Внутренняя доставка</option>
                     <option value="external">Внешняя доставка</option>
                   </select>
                 </td>
-                <td><input v-model.number="row.pricePurchase" class="field-control price-input" type="number" min="0" step="any" @blur="onDeliveryFieldBlur(row)"></td>
+                <td><input v-model.number="row.pricePurchase" class="field-control price-input" type="number" min="0" step="any" :disabled="isDealLocked" @blur="onDeliveryFieldBlur(row)"></td>
                 <td>
                   <input
                     v-model.number="row.markupPercent"
@@ -1799,12 +1910,13 @@ onBeforeUnmount(() => {
                     :class="{ 'field-control-negative': normalizeMoney(row.markupPercent) < 0 }"
                     type="number"
                     step="any"
+                    :disabled="isDealLocked"
                     @blur="onDeliveryMarkupBlur(row)"
                   >
                 </td>
-                <td><input v-model.number="row.price" class="field-control price-input" type="number" min="0" step="any" @blur="onDeliveryFieldBlur(row)"></td>
+                <td><input v-model.number="row.price" class="field-control price-input" type="number" min="0" step="any" :disabled="isDealLocked" @blur="onDeliveryFieldBlur(row)"></td>
                 <td>
-                  <input v-model="row.comment" class="field-control" type="text" @blur="onDeliveryFieldBlur(row)">
+                  <input v-model="row.comment" class="field-control" type="text" :disabled="isDealLocked" @blur="onDeliveryFieldBlur(row)">
                   <small v-if="deliverySavingMap[row.id]">Сохраняем...</small>
                 </td>
               </tr>
@@ -1814,7 +1926,7 @@ onBeforeUnmount(() => {
             </tbody>
           </table>
 
-          <div class="section-footer">
+          <div v-if="!isDealLocked" class="section-footer">
             <button type="button" class="primary-btn" @click="goNextSection">Далее</button>
           </div>
         </section>
@@ -1825,86 +1937,193 @@ onBeforeUnmount(() => {
               <h2>Калькуляция</h2>
               <p>Итоги по закупке, продаже и прибыли по разделам.</p>
             </div>
-            <button type="button" class="primary-btn" :disabled="!deal || (!deal.items.length && !deal.services.length)" @click="printCommercialProposal">
-              Сформировать коммерческое предложение
-            </button>
+            <div class="section-head-actions">
+              <button type="button" class="secondary-btn" :disabled="!deal || (!deal.items.length && !deal.services.length)" @click="printCommercialProposal">
+                Сформировать КП
+              </button>
+              <button
+                v-if="canConductDeal"
+                type="button"
+                class="primary-btn conduct-btn"
+                :disabled="conductLoading"
+                @click="conductDeal"
+              >
+                {{ conductLoading ? 'Проводим...' : 'Провести сделку' }}
+              </button>
+              <button
+                v-if="canConfirmPayment"
+                type="button"
+                class="primary-btn confirm-pay-btn"
+                :disabled="payLoading"
+                @click="confirmPayment"
+              >
+                {{ payLoading ? 'Сохраняем...' : 'Подтвердить оплату' }}
+              </button>
+            </div>
           </div>
 
           <div class="calc-settings">
             <label class="field-group">
               <span>Способ оплаты</span>
-              <select v-model="paymentMode" class="field-control">
+              <select v-model="paymentMode" class="field-control" @change="patchDealModes">
                 <option value="cash">Наличный</option>
-                <option value="noncash">Безналичный</option>
+                <option value="non-cash">Безналичный</option>
               </select>
             </label>
 
             <label v-if="isAgencyCompany" class="field-group">
               <span>Расчёт</span>
-              <select v-model="agencyMode" class="field-control">
+              <select v-model="agencyMode" class="field-control" @change="patchDealModes">
                 <option value="without_agent">Без агентского договора</option>
                 <option value="with_agent">С агентским договором</option>
               </select>
             </label>
           </div>
 
+          <!-- Карточки по разделам -->
           <div class="calc-grid">
-            <article class="calc-card">
-              <h3>Товары</h3>
-              <div class="calc-row total"><span>Итоговая стоимость</span><strong>{{ money(itemTotal) }}</strong></div>
-              <div class="calc-row"><span>Себестоимость</span><strong>{{ money(itemBase) }}</strong></div>
-              <div class="calc-row"><span>Прибыль</span><strong>{{ money(itemTotal - itemBase) }}</strong></div>
+            <article class="calc-card calc-card--items">
+              <div class="calc-card-header">
+                <div class="calc-card-icon calc-card-icon--items">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+                </div>
+                <div>
+                  <div class="calc-card-title">Товары</div>
+                  <div class="calc-card-badge" :class="(itemTotal - itemBase) >= 0 ? 'badge-profit' : 'badge-loss'">
+                    {{ itemTotal > 0 ? (((itemTotal - itemBase) / itemTotal) * 100).toFixed(1) + '% маржа' : '—' }}
+                  </div>
+                </div>
+              </div>
+              <div class="calc-amount">{{ money(itemTotal) }}</div>
+              <div class="calc-divider"></div>
+              <div class="calc-row">
+                <span class="calc-row-label">Себестоимость</span>
+                <span class="calc-row-value">{{ money(itemBase) }}</span>
+              </div>
+              <div class="calc-row calc-row--profit">
+                <span class="calc-row-label">Прибыль</span>
+                <span class="calc-row-value" :class="(itemTotal - itemBase) >= 0 ? 'text-profit' : 'text-loss'">{{ money(itemTotal - itemBase) }}</span>
+              </div>
+              <div class="calc-bar-wrap">
+                <div class="calc-bar" :style="{ width: itemTotal > 0 ? Math.min(((itemTotal - itemBase) / itemTotal * 100), 100) + '%' : '0%' }" :class="(itemTotal - itemBase) >= 0 ? 'calc-bar--green' : 'calc-bar--red'"></div>
+              </div>
             </article>
 
-            <article class="calc-card">
-              <h3>Услуги</h3>
-              <div class="calc-row total"><span>Итоговая стоимость</span><strong>{{ money(serviceTotal) }}</strong></div>
-              <div class="calc-row"><span>Себестоимость</span><strong>{{ money(serviceBase) }}</strong></div>
-              <div class="calc-row"><span>Прибыль</span><strong>{{ money(serviceTotal - serviceBase) }}</strong></div>
+            <article class="calc-card calc-card--services">
+              <div class="calc-card-header">
+                <div class="calc-card-icon calc-card-icon--services">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07M8.46 8.46a5 5 0 0 0 0 7.07"/></svg>
+                </div>
+                <div>
+                  <div class="calc-card-title">Услуги</div>
+                  <div class="calc-card-badge" :class="(serviceTotal - serviceBase) >= 0 ? 'badge-profit' : 'badge-loss'">
+                    {{ serviceTotal > 0 ? (((serviceTotal - serviceBase) / serviceTotal) * 100).toFixed(1) + '% маржа' : '—' }}
+                  </div>
+                </div>
+              </div>
+              <div class="calc-amount">{{ money(serviceTotal) }}</div>
+              <div class="calc-divider"></div>
+              <div class="calc-row">
+                <span class="calc-row-label">Себестоимость</span>
+                <span class="calc-row-value">{{ money(serviceBase) }}</span>
+              </div>
+              <div class="calc-row calc-row--profit">
+                <span class="calc-row-label">Прибыль</span>
+                <span class="calc-row-value" :class="(serviceTotal - serviceBase) >= 0 ? 'text-profit' : 'text-loss'">{{ money(serviceTotal - serviceBase) }}</span>
+              </div>
+              <div class="calc-bar-wrap">
+                <div class="calc-bar" :style="{ width: serviceTotal > 0 ? Math.min(((serviceTotal - serviceBase) / serviceTotal * 100), 100) + '%' : '0%' }" :class="(serviceTotal - serviceBase) >= 0 ? 'calc-bar--green' : 'calc-bar--red'"></div>
+              </div>
             </article>
 
-            <article class="calc-card">
-              <h3>Доставка</h3>
-              <div class="calc-row total"><span>Итоговая стоимость</span><strong>{{ money(deliveryTotal) }}</strong></div>
-              <div class="calc-row"><span>Себестоимость</span><strong>{{ money(deliveryBase) }}</strong></div>
-              <div class="calc-row"><span>Прибыль</span><strong>{{ money(deliveryTotal - deliveryBase) }}</strong></div>
+            <article class="calc-card calc-card--delivery">
+              <div class="calc-card-header">
+                <div class="calc-card-icon calc-card-icon--delivery">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>
+                </div>
+                <div>
+                  <div class="calc-card-title">Доставка</div>
+                  <div class="calc-card-badge" :class="(deliveryTotal - deliveryBase) >= 0 ? 'badge-profit' : 'badge-loss'">
+                    {{ deliveryTotal > 0 ? (((deliveryTotal - deliveryBase) / deliveryTotal) * 100).toFixed(1) + '% маржа' : '—' }}
+                  </div>
+                </div>
+              </div>
+              <div class="calc-amount">{{ money(deliveryTotal) }}</div>
+              <div class="calc-divider"></div>
+              <div class="calc-row">
+                <span class="calc-row-label">Себестоимость</span>
+                <span class="calc-row-value">{{ money(deliveryBase) }}</span>
+              </div>
+              <div class="calc-row calc-row--profit">
+                <span class="calc-row-label">Прибыль</span>
+                <span class="calc-row-value" :class="(deliveryTotal - deliveryBase) >= 0 ? 'text-profit' : 'text-loss'">{{ money(deliveryTotal - deliveryBase) }}</span>
+              </div>
+              <div class="calc-bar-wrap">
+                <div class="calc-bar" :style="{ width: deliveryTotal > 0 ? Math.min(((deliveryTotal - deliveryBase) / deliveryTotal * 100), 100) + '%' : '0%' }" :class="(deliveryTotal - deliveryBase) >= 0 ? 'calc-bar--green' : 'calc-bar--red'"></div>
+              </div>
             </article>
           </div>
 
+          <!-- Итоговая карточка -->
           <div class="summary-card">
-            <div class="summary-row">
-              <span>Общая себестоимость</span>
-              <strong>{{ money(totalPurchase) }}</strong>
+            <div class="summary-top">
+              <div class="summary-top-left">
+                <div class="summary-label">Чистая прибыль</div>
+                <div class="summary-profit" :class="netProfit >= 0 ? 'text-profit' : 'text-loss'">
+                  {{ money(netProfit) }}
+                </div>
+                <div class="summary-margin" v-if="subtotal > 0">
+                  Маржа: <strong :class="netProfit >= 0 ? 'text-profit' : 'text-loss'">{{ ((netProfit / subtotal) * 100).toFixed(1) }}%</strong>
+                </div>
+              </div>
+              <div class="summary-donut-wrap">
+                <svg class="summary-donut" viewBox="0 0 64 64" width="80" height="80">
+                  <circle cx="32" cy="32" r="26" fill="none" stroke="var(--border-light)" stroke-width="8"/>
+                  <circle
+                    cx="32" cy="32" r="26" fill="none"
+                    :stroke="netProfit >= 0 ? 'var(--calc-profit)' : 'var(--calc-loss)'"
+                    stroke-width="8"
+                    stroke-linecap="round"
+                    :stroke-dasharray="`${subtotal > 0 ? Math.min(Math.abs(netProfit / subtotal) * 163.36, 163.36) : 0} 163.36`"
+                    stroke-dashoffset="40.84"
+                    style="transition: stroke-dasharray 0.6s ease"
+                  />
+                </svg>
+                <div class="summary-donut-label">{{ subtotal > 0 ? ((Math.abs(netProfit) / subtotal) * 100).toFixed(0) + '%' : '—' }}</div>
+              </div>
             </div>
-            <div class="summary-row">
-              <span>Общая стоимость продажи</span>
-              <strong>{{ money(subtotal) }}</strong>
-            </div>
-            <div
-              v-for="taxLine in extraTaxes"
-              :key="taxLine.label"
-              class="tax-group"
-            >
+
+            <div class="summary-rows">
               <div class="summary-row">
-                <span>{{ taxLine.label }}</span>
-                <strong>{{ money(taxLine.value) }}</strong>
+                <span>Общая себестоимость</span>
+                <strong>{{ money(totalPurchase) }}</strong>
+              </div>
+              <div class="summary-row">
+                <span>Стоимость продажи</span>
+                <strong>{{ money(subtotal) }}</strong>
               </div>
               <div
-                v-for="detail in taxLine.details || []"
-                :key="`${taxLine.label}-${detail.label}`"
-                class="summary-subrow"
+                v-for="taxLine in extraTaxes"
+                :key="taxLine.label"
+                class="tax-group"
               >
-                <span>{{ detail.label }}</span>
-                <strong>{{ money(detail.value) }}</strong>
+                <div class="summary-row">
+                  <span>{{ taxLine.label }}</span>
+                  <strong>{{ money(taxLine.value) }}</strong>
+                </div>
+                <div
+                  v-for="detail in taxLine.details || []"
+                  :key="`${taxLine.label}-${detail.label}`"
+                  class="summary-subrow"
+                >
+                  <span>{{ detail.label }}</span>
+                  <strong>{{ money(detail.value) }}</strong>
+                </div>
               </div>
-            </div>
-            <div class="summary-row">
-              <span>Сумма налогов</span>
-              <strong>{{ money(totalTax) }}</strong>
-            </div>
-            <div class="summary-row">
-              <span>Чистая прибыль</span>
-              <strong>{{ money(netProfit) }}</strong>
+              <div class="summary-row">
+                <span>Сумма налогов</span>
+                <strong>{{ money(totalTax) }}</strong>
+              </div>
             </div>
           </div>
         </section>
@@ -2473,11 +2692,26 @@ select.field-control {
   border: 1px solid var(--border-light);
 }
 
+/* ── Calc variables ── */
+.card-shell {
+  --calc-profit: #16a34a;
+  --calc-loss: #dc2626;
+}
+
+/* ── Settings row ── */
+.calc-settings {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+}
+
+/* ── Section cards grid ── */
 .calc-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: 14px;
-  margin-bottom: 18px;
+  margin-top: 10px;
+  margin-bottom: 16px;
 }
 
 .calc-card {
@@ -2486,44 +2720,178 @@ select.field-control {
   padding: 20px;
   background: var(--bg-surface);
   box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.2s, transform 0.2s;
+  position: relative;
+  overflow: hidden;
+}
+.calc-card:hover {
+  box-shadow: var(--shadow-md, 0 4px 16px rgba(0,0,0,.08));
+  transform: translateY(-1px);
 }
 
-.calc-card h3 {
-  margin: 0 0 12px;
-  font-size: 14px;
-  color: var(--text-primary);
+/* left accent stripe */
+.calc-card::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  border-radius: 3px 0 0 3px;
+}
+.calc-card--items::before    { background: #3b82f6; }
+.calc-card--services::before { background: #8b5cf6; }
+.calc-card--delivery::before { background: #f59e0b; }
+
+.calc-card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.calc-card-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.calc-card-icon--items    { background: rgba(59,130,246,.12); color: #3b82f6; }
+.calc-card-icon--services { background: rgba(139,92,246,.12); color: #8b5cf6; }
+.calc-card-icon--delivery { background: rgba(245,158,11,.12); color: #f59e0b; }
+.calc-card-title {
+  font-size: 13px;
   font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+.calc-card-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 100px;
+  margin-top: 3px;
+  display: inline-block;
+}
+.badge-profit { background: rgba(22,163,74,.12); color: var(--calc-profit); }
+.badge-loss   { background: rgba(220,38,38,.12); color: var(--calc-loss); }
+
+.calc-amount {
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--text-primary);
+  letter-spacing: -0.5px;
+  margin-bottom: 12px;
+}
+
+.calc-divider {
+  height: 1px;
+  background: var(--border-light);
+  margin-bottom: 10px;
 }
 
 .calc-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 6px 0;
-  font-size: 13px;
+  padding: 4px 0;
+}
+.calc-row-label {
+  font-size: 12px;
   color: var(--text-secondary);
 }
-
-.calc-row.total {
-  border-bottom: 1px solid var(--border-light);
-  margin-bottom: 4px;
-  padding-bottom: 10px;
-  color: var(--text-primary);
+.calc-row-value {
+  font-size: 12px;
   font-weight: 600;
+  color: var(--text-primary);
 }
-
-.calc-settings {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 14px;
+.calc-row--profit {
+  margin-top: 2px;
 }
+.text-profit { color: var(--calc-profit) !important; }
+.text-loss   { color: var(--calc-loss)   !important; }
 
+/* mini progress bar */
+.calc-bar-wrap {
+  height: 4px;
+  background: var(--border-light);
+  border-radius: 4px;
+  margin-top: 12px;
+  overflow: hidden;
+}
+.calc-bar {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.6s ease;
+}
+.calc-bar--green { background: var(--calc-profit); }
+.calc-bar--red   { background: var(--calc-loss); }
+
+/* ── Summary card ── */
 .summary-card {
   border: 1px solid var(--border-light);
   border-radius: var(--radius-lg);
-  padding: 20px;
   background: var(--bg-surface);
   box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.summary-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px;
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border-light);
+  gap: 16px;
+}
+.summary-top-left {
+  flex: 1;
+}
+.summary-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+.summary-profit {
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -1px;
+  line-height: 1.1;
+}
+.summary-margin {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+/* donut */
+.summary-donut-wrap {
+  position: relative;
+  width: 80px;
+  height: 80px;
+  flex-shrink: 0;
+}
+.summary-donut {
+  transform: rotate(-90deg);
+}
+.summary-donut-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+/* rows section */
+.summary-rows {
+  padding: 8px 24px 16px;
 }
 
 .summary-row {
@@ -2533,15 +2901,14 @@ select.field-control {
   padding: 8px 0;
   font-size: 13px;
   color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-light);
 }
-
 .summary-row:last-of-type {
-  border-top: 2px solid var(--border-light);
-  margin-top: 4px;
-  padding-top: 12px;
+  border-bottom: none;
+}
+.summary-row strong {
   color: var(--text-primary);
-  font-weight: 700;
-  font-size: 15px;
+  font-weight: 600;
 }
 
 .summary-subrow {
@@ -2557,6 +2924,13 @@ select.field-control {
   border-top: 1px solid var(--border-light);
   padding-top: 4px;
   margin-top: 4px;
+}
+
+.section-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .primary-btn {
@@ -2578,6 +2952,20 @@ select.field-control {
 .primary-btn:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+.conduct-btn {
+  background: #16a34a;
+}
+.conduct-btn:hover:not(:disabled) {
+  background: #15803d;
+}
+
+.confirm-pay-btn {
+  background: #7c3aed;
+}
+.confirm-pay-btn:hover:not(:disabled) {
+  background: #6d28d9;
 }
 
 .secondary-btn {

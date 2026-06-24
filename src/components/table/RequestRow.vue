@@ -355,7 +355,7 @@ const getBadge = (chatId) => {
       </div>
     </td>
     <td v-for="(bar, idx) in row.statusBars" :key="`bar-${idx}`" class="chart-cell">
-      <div v-if="bar.label" class="bar-value">{{ bar.label }}</div>
+      <div class="bar-value">{{ bar.label || '' }}</div>
       <div class="bar-track">
         <template v-if="bar.type === 'segments'">
           <div class="segment-track">
@@ -438,7 +438,7 @@ th {
 }
 
 td {
-  padding: 16px 10px;
+  padding: 8px 8px;
   vertical-align: top;
   color: var(--text-primary);
   border-bottom: 1px solid var(--border-light);
@@ -662,8 +662,8 @@ td:last-child {
 
 .chart-cell {
   padding: 4px 6px;
-  vertical-align: bottom;
-  height: 135px;
+  vertical-align: top;
+  height: 52px;
   position: relative;
   overflow: visible;
   white-space: nowrap;
@@ -718,35 +718,34 @@ td:last-child {
   width: fit-content;
 }
 
-.chart-cell {
-  padding: 4px 6px;
-  vertical-align: bottom;
-  height: 135px;
-  position: relative;
-  overflow: visible;
+.chart-cell-dup {
+  display: none;
 }
 
 .bar-track {
   width: 6px;
-  height: 100%;
+  height: 36px;
   background: var(--border-light);
-  border-radius: 0;
+  border-radius: 3px;
   position: relative;
   overflow: hidden;
   display: flex;
   flex-direction: column-reverse;
+  margin: 0 auto;
 }
 
 .bar-value {
-  position: absolute;
-  left: 50%;
-  top: 2px;
-  transform: translateX(-50%);
+  text-align: center;
   font-size: 9px;
   font-weight: 700;
   color: var(--brand-primary);
   line-height: 1;
   white-space: nowrap;
+  height: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 3px;
 }
 
 .overdue-badge {
@@ -770,16 +769,7 @@ td:last-child {
   width: fit-content;
 }
 
-.bar-track {
-  width: 6px;
-  height: 48px;
-  background: var(--border-light);
-  border-radius: 0;
-  position: relative;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column-reverse;
-}
+/* second bar-track removed — see above */
 
 .bar-fill {
   width: 100%;

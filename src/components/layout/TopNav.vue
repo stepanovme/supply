@@ -54,7 +54,7 @@ const supportUrl = import.meta.env.VITE_SUPPORT_URL || 'mailto:support@st29.ru'
 const wikiUrl = import.meta.env.VITE_WIKI_URL || '/docs/'
 const notificationsTotal = computed(() =>
   Number(props.notificationCounts?.requests || 0)
-  + Number(props.notificationCounts?.invoices || 0)
+  + Number(chat.badgeCounts?.total || 0)
   + Number(props.notificationCounts?.deliveries || 0)
 )
 
@@ -124,9 +124,9 @@ onBeforeUnmount(() => {
             <span>Заявки</span>
             <strong>{{ notificationCounts.requests || 0 }}</strong>
           </div>
-          <div class="notif-item">
+          <div class="notif-item" @click="router.push('/invoices/groups'); notificationsOpen = false">
             <span>Счета</span>
-            <strong>{{ notificationCounts.invoices || 0 }}</strong>
+            <strong>{{ chat.badgeCounts.total || 0 }}</strong>
           </div>
           <div class="notif-item">
             <span>Доставки</span>

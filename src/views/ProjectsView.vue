@@ -1,6 +1,6 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import TopNav from '../components/layout/TopNav.vue'
 import FilterTabs from '../components/filters/FilterTabs.vue'
 import { mainNavLinks } from '../constants/mainNav'
@@ -53,6 +53,7 @@ const isContractDropdownOpen = ref(false)
 const isWorkTypeDropdownOpen = ref(false)
 const isSubmittingLevel = ref(false)
 const levelModalError = ref('')
+const route = useRoute()
 const router = useRouter()
 
 const toggleMenu = (id) => {
@@ -616,11 +617,43 @@ const openWork = (projectId, node) => {
   const project = rows.value.find((row) => row.id === projectId)
   router.push({
     path: `/projects/${projectId}/works/${node.id}`,
-    query: project?.objectId ? { object_id: project.objectId } : {},
+    query: {
+      ...(project?.objectId ? { object_id: project.objectId } : {}),
+      back: route.fullPath,
+    },
   })
 }
 
-onMounted(loadProjects)
+const PROJECTS_SCROLL_KEY = 'projects-list-scroll'
+
+const scheduleScrollRestore = (key) => {
+  const saved = sessionStorage.getItem(key)
+  if (!saved) return
+  const top = Number(saved)
+  const tryScroll = (attemptsLeft) => {
+    const pageHeight = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)
+    if (pageHeight >= top + window.innerHeight || attemptsLeft <= 0) {
+      window.scrollTo(0, top)
+      document.documentElement.scrollTop = top
+      document.body.scrollTop = top
+      sessionStorage.removeItem(key)
+    } else {
+      setTimeout(() => tryScroll(attemptsLeft - 1), 60)
+    }
+  }
+  nextTick(() => nextTick(() => tryScroll(10)))
+}
+
+onMounted(() => {
+  window.addEventListener('click', handleWindowClick)
+  loadProjects().then(() => scheduleScrollRestore(PROJECTS_SCROLL_KEY))
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('click', handleWindowClick)
+  const scrollTop = window.scrollY || document.documentElement.scrollTop || document.body.scrollTop
+  sessionStorage.setItem(PROJECTS_SCROLL_KEY, String(scrollTop))
+})
 </script>
 
 <template>

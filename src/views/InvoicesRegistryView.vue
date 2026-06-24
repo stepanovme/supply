@@ -5,6 +5,7 @@ import TopNav from '../components/layout/TopNav.vue'
 import ChatPanel from '../components/chat/ChatPanel.vue'
 import { useChatStore } from '../stores/chat'
 import { mainNavLinks } from '../constants/mainNav'
+import { priorityStyle } from '../utils/priorityColor'
 
 const route = useRoute()
 const router = useRouter()
@@ -44,6 +45,8 @@ const selectedProjectObjectId = ref('')
 const isSupplierDropdownOpen = ref(false)
 const isPayerDropdownOpen = ref(false)
 const isProjectDropdownOpen = ref(false)
+const creatingObject = ref(false)
+const newObjectName = ref('')
 const deliveryIncluded = ref(null)
 const prepaymentRequired = ref(null)
 const prepaymentPercent = ref('')
@@ -224,9 +227,11 @@ const loadInvoicesRegistry = async () => {
       rawCreatedDate: String(invoice?.created_at || ''),
       paymentLines: normalizeArray(invoice?.payments).map((payment) => ({
         amount: formatMoney(payment?.value),
+        rawValue: toMoneyNumber(payment?.value),
         date: formatDate(payment?.paid_at || payment?.date_plan),
         rawDate: String(payment?.paid_at || payment?.date_plan || ''),
         isPaid: toMoneyNumber(payment?.paid) > 0 || Boolean(payment?.paid_at),
+        priority: payment?.priority ?? null,
       })),
       project: invoice?.project_name || '—',
       requestName: invoice?.request_name || `Заявка #${invoice?.request_id || ''}`,
@@ -484,6 +489,29 @@ const selectProjectObject = (item) => {
   projectQuery.value = item.name || ''
   isProjectDropdownOpen.value = false
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+}
+
+const createObject = async () => {
+  const name = newObjectName.value.trim()
+  if (!name) return
+  creatingObject.value = true
+  try {
+    const res = await fetch('/apiref/ref/objects', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ short_name: name, is_active: true }),
+    })
+    if (!res.ok) throw new Error('create object failed')
+    const created = await res.json()
+    await Promise.all([loadProjectObjects(), loadObjects()])
+    selectProjectObject({ id: created.id || created.object_id, name, type: 'object' })
+  } catch {
+    projectObjectsError.value = 'Не удалось создать объект.'
+  } finally {
+    creatingObject.value = false
+    newObjectName.value = ''
+  }
 }
 
 const triggerInvoiceFilesInput = () => {
@@ -877,6 +905,57 @@ const openProjectFromInvoiceRow = async (row) => {
   }
 }
 
+// ── Checkbox selection ────────────────────────────────────
+const checkedInvoiceIds = ref(new Set())
+
+const checkedAll = computed(() => {
+  const ids = filteredRows.value.map(r => r.key)
+  return ids.length > 0 && ids.every(id => checkedInvoiceIds.value.has(id))
+})
+
+const toggleAllInvoices = (val) => {
+  const ids = filteredRows.value.map(r => r.key)
+  if (val) {
+    checkedInvoiceIds.value = new Set([...checkedInvoiceIds.value, ...ids])
+  } else {
+    const s = new Set(checkedInvoiceIds.value)
+    ids.forEach(id => s.delete(id))
+    checkedInvoiceIds.value = s
+  }
+}
+
+const toggleInvoice = (key) => {
+  const s = new Set(checkedInvoiceIds.value)
+  if (s.has(key)) s.delete(key)
+  else s.add(key)
+  checkedInvoiceIds.value = s
+}
+
+const activeInvoiceRows = computed(() =>
+  checkedInvoiceIds.value.size > 0
+    ? filteredRows.value.filter(r => checkedInvoiceIds.value.has(r.key))
+    : filteredRows.value,
+)
+
+const invoiceFooterTotal = computed(() =>
+  activeInvoiceRows.value.reduce((s, r) => s + (r.totalAmountNum || 0), 0),
+)
+
+const invoiceFooterUnplanned = computed(() =>
+  activeInvoiceRows.value
+    .filter(r => !(r.paymentLines || []).some(l => !l.isPaid))
+    .reduce((s, r) => s + (r.totalAmountNum || 0), 0),
+)
+
+const invoiceFooterPaid = computed(() =>
+  activeInvoiceRows.value.reduce((s, r) => s + (r.paidAmountNum || 0), 0),
+)
+
+const invoiceFooterPlanned = computed(() =>
+  activeInvoiceRows.value.reduce((s, r) =>
+    s + (r.paymentLines || []).reduce((ps, p) => ps + (p.rawValue || 0), 0), 0),
+)
+
 const paidPercent = (row) => {
   const total = toMoneyNumber(row?.totalAmountNum)
   const paid = toMoneyNumber(row?.paidAmountNum)
@@ -1032,20 +1111,55 @@ const filteredRows = computed(() => {
       if (!matchesDate) return false
     }
     return true
+  }).map((row) => {
+    // Минимальный приоритет среди незапланированных неоплаченных платежей
+    const unpaidLines = (row.paymentLines || []).filter(l => !l.isPaid && l.priority != null)
+    const minPriority = unpaidLines.length
+      ? Math.min(...unpaidLines.map(l => l.priority))
+      : null
+    return { ...row, minPriority, hasUnpaidPlanned: unpaidLines.length > 0 }
+  }).sort((a, b) => {
+    // Счета с приоритетом — вверху, по возрастанию приоритета
+    if (a.minPriority != null && b.minPriority != null) return a.minPriority - b.minPriority
+    if (a.minPriority != null) return -1
+    if (b.minPriority != null) return 1
+    return 0
   })
 })
+
+const SCROLL_KEY = 'invoices-registry-scroll'
+
+const scheduleScrollRestore = (key) => {
+  const saved = sessionStorage.getItem(key)
+  if (!saved) return
+  const top = Number(saved)
+  const tryScroll = (attemptsLeft) => {
+    const pageHeight = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)
+    if (pageHeight >= top + window.innerHeight || attemptsLeft <= 0) {
+      window.scrollTo(0, top)
+      document.documentElement.scrollTop = top
+      document.body.scrollTop = top
+      sessionStorage.removeItem(key)
+    } else {
+      setTimeout(() => tryScroll(attemptsLeft - 1), 60)
+    }
+  }
+  nextTick(() => nextTick(() => tryScroll(10)))
+}
 
 onMounted(() => {
   window.addEventListener('mousedown', handleWindowClick)
   window.addEventListener('focus', refreshCounterpartiesOnFocus)
   window.addEventListener('focus', refreshProjectObjectsOnFocus)
-  loadInvoicesRegistry()
+  loadInvoicesRegistry().then(() => scheduleScrollRestore(SCROLL_KEY))
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('mousedown', handleWindowClick)
   window.removeEventListener('focus', refreshCounterpartiesOnFocus)
   window.removeEventListener('focus', refreshProjectObjectsOnFocus)
+  const scrollTop = window.scrollY || document.documentElement.scrollTop || document.body.scrollTop
+  sessionStorage.setItem(SCROLL_KEY, String(scrollTop))
 })
 </script>
 
@@ -1171,7 +1285,7 @@ onBeforeUnmount(() => {
             </colgroup>
             <thead>
               <tr>
-                <th><input type="checkbox"></th>
+                <th><input type="checkbox" :checked="checkedAll" @change="toggleAllInvoices($event.target.checked)"></th>
                 <th>ID</th>
                 <th>Счет</th>
                 <th>Сумма</th>
@@ -1191,13 +1305,17 @@ onBeforeUnmount(() => {
                   <div class="left-marker">
                     <div class="left-marker-solid" :class="`solid-${row.statusClass}`"></div>
                   </div>
-                  <input type="checkbox">
+                  <input type="checkbox" :checked="checkedInvoiceIds.has(row.key)" @change="toggleInvoice(row.key)">
                 </td>
                 <td>
                   <a href="#" class="id-link" @click.prevent="openInvoice(row, 'view')">#{{ row.invoiceId }}</a>
                 </td>
                 <td>
-                  <div class="invoice-main"><span v-if="row.isUrgent" class="urgent-dot" title="Срочный счёт">🔥</span>{{ row.invoiceName }}</div>
+                  <div class="invoice-main">
+                    <span v-if="row.isUrgent" class="urgent-dot" title="Срочный счёт">🔥</span>
+                    <span v-if="row.hasUnpaidPlanned && row.minPriority != null" class="priority-badge" :style="priorityStyle(row.minPriority)" :title="`Приоритет оплаты: ${row.minPriority}`">{{ row.minPriority }}</span>
+                    {{ row.invoiceName }}
+                  </div>
                   <button type="button" class="chat-icon-btn" title="Чат счета" @click="chat.openPanel('invoice', String(row.invoiceId), row.chatId, row.invoiceName)">
                     <span class="chat-icon-wrap">
                       <i class="fas fa-comment-dots"></i>
@@ -1283,6 +1401,54 @@ onBeforeUnmount(() => {
         </div>
       </template>
     </main>
+
+    <!-- ── Sticky footer summary bar ── -->
+    <div class="invoice-footer-bar">
+      <div class="invoice-footer-inner">
+        <div class="footer-label-block">
+          <span class="footer-label">
+            {{ checkedInvoiceIds.size > 0 ? `Выбрано: ${checkedInvoiceIds.size}` : `Всего: ${filteredRows.length}` }}
+          </span>
+          <button v-if="checkedInvoiceIds.size > 0" class="footer-clear-btn" @click="checkedInvoiceIds = new Set()">
+            <i class="fas fa-times"></i> Снять выбор
+          </button>
+        </div>
+        <div class="footer-divider"></div>
+        <div class="footer-stat">
+          <span class="footer-stat-label">Сумма счетов</span>
+          <span class="footer-stat-value">{{ formatMoney(invoiceFooterTotal) }}</span>
+        </div>
+        <div class="footer-divider"></div>
+        <div class="footer-stat">
+          <span class="footer-stat-label">Незапланированные</span>
+          <span class="footer-stat-value footer-unplanned">{{ formatMoney(invoiceFooterUnplanned) }}</span>
+        </div>
+        <div class="footer-divider"></div>
+        <div class="footer-stat">
+          <span class="footer-stat-label">Запланировано</span>
+          <span class="footer-stat-value footer-planned">{{ formatMoney(invoiceFooterPlanned) }}</span>
+        </div>
+        <div class="footer-divider"></div>
+        <div class="footer-stat">
+          <span class="footer-stat-label">Оплачено</span>
+          <span class="footer-stat-value footer-paid">{{ formatMoney(invoiceFooterPaid) }}</span>
+        </div>
+        <div class="footer-divider"></div>
+        <div class="footer-stat">
+          <span class="footer-stat-label">Остаток к оплате</span>
+          <span class="footer-stat-value" :class="invoiceFooterPlanned - invoiceFooterPaid > 0 ? 'footer-debt-pos' : 'footer-debt-zero'">
+            {{ formatMoney(invoiceFooterPlanned - invoiceFooterPaid) }}
+          </span>
+        </div>
+        <div class="footer-divider"></div>
+        <div class="footer-stat">
+          <span class="footer-stat-label">% оплаты</span>
+          <span class="footer-stat-value">
+            {{ invoiceFooterPlanned > 0 ? Math.round((invoiceFooterPaid / invoiceFooterPlanned) * 100) : 0 }}%
+          </span>
+        </div>
+      </div>
+    </div>
 
     <div v-if="isCreateInvoiceModalOpen" class="modal-backdrop" @click="closeCreateInvoiceModal">
       <div v-if="parsingInvoice" class="fullscreen-loader">
@@ -1431,22 +1597,28 @@ onBeforeUnmount(() => {
               </button>
             </div>
             <div v-if="isProjectDropdownOpen" class="lookup-list lookup-list-overlay">
-              <div v-if="projectObjectsLoading || objectsLoading" class="lookup-empty">Загрузка...</div>
-              <div v-else-if="projectObjectsError && objectsError" class="lookup-empty error">{{ projectObjectsError || objectsError }}</div>
-              <button
-                v-for="item in filteredProjectObjects"
-                :key="`${item.type}-${item.id}`"
-                class="lookup-item"
-                type="button"
-                @click="selectProjectObject(item)"
-              >
-                <span v-if="item.type === 'object'" class="item-badge">Объект</span>
-                <span v-else class="item-badge">Проект</span>
-                {{ item.name }}
-              </button>
-              <div v-if="!projectObjectsLoading && !objectsLoading && filteredProjectObjects.length === 0" class="lookup-empty">
-                Ничего не найдено
-              </div>
+              <div v-if="creatingObject" class="lookup-empty">Создание объекта...</div>
+              <template v-else-if="!creatingObject">
+                <button v-if="projectQuery.trim()" class="lookup-item create-item" type="button" @click="newObjectName = projectQuery.trim(); createObject()">
+                  + Создать объект «{{ projectQuery.trim() }}»
+                </button>
+                <div v-if="projectObjectsLoading || objectsLoading" class="lookup-empty">Загрузка...</div>
+                <div v-else-if="projectObjectsError && objectsError" class="lookup-empty error">{{ projectObjectsError || objectsError }}</div>
+                <button
+                  v-for="item in filteredProjectObjects"
+                  :key="`${item.type}-${item.id}`"
+                  class="lookup-item"
+                  type="button"
+                  @click="selectProjectObject(item)"
+                >
+                  <span v-if="item.type === 'object'" class="item-badge">Объект</span>
+                  <span v-else class="item-badge">Проект</span>
+                  {{ item.name }}
+                </button>
+                <div v-if="!projectObjectsLoading && !objectsLoading && filteredProjectObjects.length === 0 && !projectQuery.trim()" class="lookup-empty">
+                  Ничего не найдено
+                </div>
+              </template>
             </div>
           </div>
         </div>
@@ -1543,6 +1715,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .invoices-main {
   padding: 24px;
+  padding-bottom: 72px;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -2142,6 +2315,19 @@ tr:hover td {
   border-bottom: 1px solid var(--border-light);
 }
 
+.create-item {
+  font-weight: 600;
+  color: var(--brand-primary);
+  border-bottom: 1px solid var(--border-light);
+  cursor: pointer;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.create-item:hover {
+  background: var(--bg-subtle);
+}
+
 .lookup-empty {
   padding: 10px 12px;
   color: var(--text-secondary);
@@ -2311,4 +2497,103 @@ tr:hover td {
   background: #e8e8e8;
   color: #666;
 }
+
+/* ── Invoice footer summary bar ── */
+.invoice-footer-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--bg-surface);
+  border-top: 2px solid var(--border-light);
+  box-shadow: 0 -4px 16px rgba(0,0,0,0.08);
+  z-index: 200;
+  padding: 0 24px;
+}
+
+.invoice-footer-inner {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  height: 48px;
+}
+
+.footer-label-block {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-right: 20px;
+}
+
+.footer-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.footer-clear-btn {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.footer-clear-btn:hover { background: var(--bg-page, #f1f5f9); }
+
+.footer-divider {
+  width: 1px;
+  height: 28px;
+  background: var(--border-light);
+  flex-shrink: 0;
+  margin: 0 20px;
+}
+
+.footer-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  white-space: nowrap;
+}
+
+.footer-stat-label {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+
+.footer-stat-value {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-family: "JetBrains Mono", monospace;
+}
+
+.priority-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 700;
+  margin-right: 4px;
+  flex-shrink: 0;
+}
+
+.footer-unplanned { color: #9333ea; }
+.footer-planned { color: #2563eb; }
+.footer-paid { color: #16a34a; }
+.footer-debt-pos { color: #ef4444; }
+.footer-debt-zero { color: #16a34a; }
 </style>

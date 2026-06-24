@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import TopNav from '../components/layout/TopNav.vue'
 import { buildWarehouseCategoryTree } from '../helpers/warehouseCategoryTree'
@@ -55,7 +55,11 @@ const filters = ref({
   incomingTollCompany: '',
   outgoingNumber: '',
   outgoingCreatedAt: '',
+  outgoingCreatedAtFrom: '',
+  outgoingCreatedAtTo: '',
   outgoingConductedAt: '',
+  outgoingConductedAtFrom: '',
+  outgoingConductedAtTo: '',
   outgoingCounterparty: '',
   outgoingWhoWriteOff: '',
   outgoingObject: '',
@@ -82,6 +86,28 @@ const nomenclatureRows = ref([])
 const categoryRows = ref([])
 const incomingRows = ref([])
 const outgoingRows = ref([])
+const outgoingSelectedIds = ref(new Set())
+const outgoingAllVisibleChecked = computed(() =>
+  filteredOutgoingRows.value.length > 0 &&
+  filteredOutgoingRows.value.every(r => outgoingSelectedIds.value.has(r.id))
+)
+const toggleOutgoingAll = () => {
+  const ids = new Set(outgoingSelectedIds.value)
+  if (outgoingAllVisibleChecked.value) {
+    filteredOutgoingRows.value.forEach(r => ids.delete(r.id))
+  } else {
+    filteredOutgoingRows.value.forEach(r => ids.add(r.id))
+  }
+  outgoingSelectedIds.value = ids
+}
+const toggleOutgoingRow = (id) => {
+  const ids = new Set(outgoingSelectedIds.value)
+  ids.has(id) ? ids.delete(id) : ids.add(id)
+  outgoingSelectedIds.value = ids
+}
+const outgoingSelectedRows = computed(() =>
+  filteredOutgoingRows.value.filter(r => outgoingSelectedIds.value.has(r.id))
+)
 const returnRows = ref([])
 const inventoryRows = ref([])
 const incomingDeliveryRows = ref([])
@@ -253,13 +279,22 @@ const filteredIncomingRows = computed(() => {
 const filteredOutgoingRows = computed(() => {
   return outgoingRows.value.filter((row) => {
     const numberOk = !filters.value.outgoingNumber || String(row.number || '').toLowerCase().includes(String(filters.value.outgoingNumber).toLowerCase())
-    const createdOk = !filters.value.outgoingCreatedAt || normalizeDateFilterValue(row.createdAt) === String(filters.value.outgoingCreatedAt)
-    const conductedOk = !filters.value.outgoingConductedAt || normalizeDateFilterValue(row.conductedAt) === String(filters.value.outgoingConductedAt)
+
+    const rowCreated = normalizeDateFilterValue(row.createdAt)
+    const createdOk = !filters.value.outgoingCreatedAt || rowCreated === String(filters.value.outgoingCreatedAt)
+    const createdFromOk = !filters.value.outgoingCreatedAtFrom || rowCreated >= String(filters.value.outgoingCreatedAtFrom)
+    const createdToOk = !filters.value.outgoingCreatedAtTo || rowCreated <= String(filters.value.outgoingCreatedAtTo)
+
+    const rowConducted = normalizeDateFilterValue(row.conductedAt)
+    const conductedOk = !filters.value.outgoingConductedAt || rowConducted === String(filters.value.outgoingConductedAt)
+    const conductedFromOk = !filters.value.outgoingConductedAtFrom || rowConducted >= String(filters.value.outgoingConductedAtFrom)
+    const conductedToOk = !filters.value.outgoingConductedAtTo || rowConducted <= String(filters.value.outgoingConductedAtTo)
+
     const counterpartyOk = !filters.value.outgoingCounterparty || String(row.counterparty || '').toLowerCase().includes(String(filters.value.outgoingCounterparty).toLowerCase())
     const whoWriteOffOk = !filters.value.outgoingWhoWriteOff || String(row.whoWriteOff || '').toLowerCase().includes(String(filters.value.outgoingWhoWriteOff).toLowerCase())
     const objectOk = !filters.value.outgoingObject || String(row.objectName || '').toLowerCase().includes(String(filters.value.outgoingObject).toLowerCase())
     const statusOk = !filters.value.outgoingStatus || String(row.status.label || '').toLowerCase().includes(String(filters.value.outgoingStatus).toLowerCase())
-    return numberOk && createdOk && conductedOk && counterpartyOk && whoWriteOffOk && objectOk && statusOk
+    return numberOk && createdOk && createdFromOk && createdToOk && conductedOk && conductedFromOk && conductedToOk && counterpartyOk && whoWriteOffOk && objectOk && statusOk
   })
 })
 const filteredReturnRows = computed(() => {
@@ -892,6 +927,390 @@ const openEditCategory = (row) => {
   })
 }
 
+function drawOutgoingPieChart(title, segments) {
+  const COLORS = ['#2563eb', '#16a34a', '#f59e0b', '#8b5cf6', '#dc2626', '#06b6d4']
+  const total = segments.reduce((s, seg) => s + seg.value, 0)
+  const W = 680
+  const TITLE_H = 44
+  const PIE_R = 130
+  const PIE_CX = 180
+  const PIE_CY = TITLE_H + PIE_R + 24
+  const LEG_X = PIE_CX + PIE_R + 36
+  const LEG_LINE_H = 56
+  const LEG_W = W - LEG_X - 16
+  const H = Math.max(PIE_CY + PIE_R + 28, TITLE_H + segments.length * LEG_LINE_H + 28)
+
+  const canvas = document.createElement('canvas')
+  canvas.width = W
+  canvas.height = H
+  const ctx = canvas.getContext('2d')
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, W, H)
+
+  ctx.fillStyle = '#0f172a'
+  ctx.font = 'bold 16px Arial'
+  ctx.textAlign = 'center'
+  ctx.fillText(title, W / 2, 28)
+
+  ctx.strokeStyle = '#e2e8f0'
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(16, TITLE_H - 6)
+  ctx.lineTo(W - 16, TITLE_H - 6)
+  ctx.stroke()
+
+  if (total === 0) {
+    ctx.fillStyle = '#94a3b8'
+    ctx.font = '14px Arial'
+    ctx.textAlign = 'center'
+    ctx.fillText('Нет данных', PIE_CX, PIE_CY)
+    return canvas.toDataURL('image/png')
+  }
+
+  let startAngle = -Math.PI / 2
+  segments.forEach((seg, i) => {
+    const angle = (seg.value / total) * Math.PI * 2
+    ctx.beginPath()
+    ctx.moveTo(PIE_CX, PIE_CY)
+    ctx.arc(PIE_CX, PIE_CY, PIE_R, startAngle, startAngle + angle)
+    ctx.closePath()
+    ctx.fillStyle = COLORS[i % COLORS.length]
+    ctx.fill()
+    ctx.strokeStyle = '#ffffff'
+    ctx.lineWidth = 2.5
+    ctx.stroke()
+    const pct = (seg.value / total) * 100
+    if (pct >= 8) {
+      const midAngle = startAngle + angle / 2
+      const lx = PIE_CX + Math.cos(midAngle) * (PIE_R * 0.62)
+      const ly = PIE_CY + Math.sin(midAngle) * (PIE_R * 0.62)
+      ctx.fillStyle = '#ffffff'
+      ctx.font = 'bold 14px Arial'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(`${pct.toFixed(1)}%`, lx, ly)
+    }
+    startAngle += angle
+  })
+
+  ctx.beginPath()
+  ctx.arc(PIE_CX, PIE_CY, PIE_R, 0, Math.PI * 2)
+  ctx.strokeStyle = '#e2e8f0'
+  ctx.lineWidth = 1
+  ctx.stroke()
+
+  ctx.textBaseline = 'alphabetic'
+  const legStartY = TITLE_H + 12
+  segments.forEach((seg, i) => {
+    const y = legStartY + i * LEG_LINE_H
+    const pct = ((seg.value / total) * 100).toFixed(1)
+    const color = COLORS[i % COLORS.length]
+    const swatchSize = 14
+    ctx.fillStyle = color
+    ctx.beginPath()
+    ctx.roundRect(LEG_X, y + 2, swatchSize, swatchSize, 3)
+    ctx.fill()
+    ctx.fillStyle = '#475569'
+    ctx.font = '12px Arial'
+    ctx.textAlign = 'left'
+    ctx.fillText(seg.label, LEG_X + swatchSize + 8, y + 13)
+    ctx.fillStyle = '#0f172a'
+    ctx.font = 'bold 14px Arial'
+    ctx.fillText(seg.formatted, LEG_X + swatchSize + 8, y + 31)
+    const pctText = `${pct}%`
+    ctx.font = 'bold 13px Arial'
+    const pctW = ctx.measureText(pctText).width + 14
+    const pctX = LEG_X + LEG_W - pctW
+    const pctY = y + 4
+    ctx.fillStyle = color + '22'
+    ctx.beginPath()
+    ctx.roundRect(pctX, pctY, pctW, 20, 4)
+    ctx.fill()
+    ctx.fillStyle = color
+    ctx.textAlign = 'center'
+    ctx.fillText(pctText, pctX + pctW / 2, pctY + 14)
+    if (i < segments.length - 1) {
+      ctx.strokeStyle = '#f1f5f9'
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.moveTo(LEG_X, y + LEG_LINE_H - 4)
+      ctx.lineTo(W - 16, y + LEG_LINE_H - 4)
+      ctx.stroke()
+    }
+  })
+
+  return canvas.toDataURL('image/png')
+}
+
+const formatMoneyReport = (v) =>
+  new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v) + ' ₽'
+
+const generateOutgoingReport = async () => {
+  const rows = outgoingSelectedRows.value
+  if (!rows.length) return
+
+  const ExcelJS = await import('exceljs')
+  const wb = new ExcelJS.Workbook()
+  wb.creator = 'Supply'
+
+  const ws = wb.addWorksheet('Расходные накладные', {
+    pageSetup: {
+      paperSize: 9,
+      orientation: 'landscape',
+      fitToPage: true,
+      fitToWidth: 1,
+      fitToHeight: 0,
+      margins: { left: 0.5, right: 0.5, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3 },
+    },
+  })
+
+  ws.columns = Array.from({ length: 11 }, () => ({ width: 10 }))
+
+  const titleRow = ws.addRow(['Отчёт: Расходные накладные'])
+  ws.mergeCells(`A${titleRow.number}:K${titleRow.number}`)
+  titleRow.getCell(1).font = { bold: true, size: 14 }
+  titleRow.getCell(1).alignment = { horizontal: 'center' }
+  titleRow.height = 26
+
+  ws.addRow([])
+
+  const headerRow = ws.addRow([
+    '№', 'Номер', 'Дата создания', 'Дата проведения',
+    'Кому', 'На кого списывать', 'Объект строительства', 'Склад',
+    'Сумма', 'Прибыль', 'Статус',
+  ])
+  headerRow.height = 30
+  headerRow.eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: 'FF1E293B' } }
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } }
+    cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }
+    cell.border = {
+      top: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      bottom: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      right: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+    }
+  })
+
+  let totalSum = 0
+  let totalProfit = 0
+  const formatDate = (v) => {
+    if (!v) return '—'
+    const d = new Date(v)
+    return isNaN(d.getTime()) ? '—' : d.toLocaleDateString('ru-RU')
+  }
+
+  rows.forEach((row, idx) => {
+    const profit = row.sumOpt - row.sum
+    totalSum += row.sumOpt
+    totalProfit += profit
+    const dr = ws.addRow([
+      idx + 1,
+      row.number,
+      formatDate(row.createdAt),
+      formatDate(row.conductedAt),
+      row.counterparty,
+      row.whoWriteOff || '—',
+      row.objectName,
+      row.warehouseName || '—',
+      row.sumOpt,
+      profit,
+      row.status.label,
+    ])
+    dr.height = 22
+    dr.eachCell((cell, colNum) => {
+      cell.border = {
+        top: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+        bottom: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+        left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+        right: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      }
+      if (colNum === 1 || colNum === 11) cell.alignment = { horizontal: 'center', vertical: 'middle' }
+      if (colNum === 9 || colNum === 10) {
+        cell.numFmt = '#,##0.00 ₽'
+        cell.alignment = { horizontal: 'right', vertical: 'middle' }
+      }
+    })
+    if (idx % 2 === 1) {
+      dr.eachCell((cell) => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } }
+      })
+    }
+  })
+
+  const totalRow = ws.addRow(['', 'ИТОГО', '', '', '', '', '', '', totalSum, totalProfit, ''])
+  totalRow.height = 26
+  totalRow.eachCell((cell, colNum) => {
+    cell.font = { bold: true }
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDBEAFE' } }
+    cell.border = {
+      top: { style: 'medium', color: { argb: 'FF2563EB' } },
+      bottom: { style: 'medium', color: { argb: 'FF2563EB' } },
+      left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      right: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+    }
+    if (colNum === 9 || colNum === 10) {
+      cell.numFmt = '#,##0.00 ₽'
+      cell.alignment = { horizontal: 'right' }
+    }
+  })
+
+  ws.addRow([])
+  ws.addRow([])
+
+  const byWho = {}
+  rows.forEach((r) => {
+    const key = r.whoWriteOff || '—'
+    if (!byWho[key]) byWho[key] = { sum: 0, profit: 0 }
+    byWho[key].sum += r.sumOpt
+    byWho[key].profit += (r.sumOpt - r.sum)
+  })
+  const whoKeys = Object.keys(byWho)
+
+  const summaryHeaderStyle = (cell) => {
+    cell.font = { bold: true, color: { argb: 'FF1E293B' }, size: 11 }
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } }
+    cell.alignment = { horizontal: 'center', vertical: 'middle' }
+    cell.border = {
+      top: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      bottom: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      right: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+    }
+  }
+  const summaryCellStyle = (cell, isNum = false) => {
+    cell.border = {
+      top: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      bottom: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      right: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+    }
+    cell.alignment = { horizontal: isNum ? 'right' : 'left', vertical: 'middle' }
+    if (isNum) cell.numFmt = '#,##0.00 ₽'
+  }
+
+  const sumTblHeader = ws.addRow([
+    'На кого списывать', 'Сумма', '% от итого', '',
+    '', 'На кого списывать', 'Прибыль', '% от итого',
+  ])
+  sumTblHeader.height = 26
+  ;[1, 2, 3, 6, 7, 8].forEach(c => summaryHeaderStyle(sumTblHeader.getCell(c)))
+
+  let whoSumTotal = 0
+  let whoProfitTotal = 0
+  whoKeys.forEach(k => { whoSumTotal += byWho[k].sum; whoProfitTotal += byWho[k].profit })
+
+  whoKeys.forEach((k, idx) => {
+    const pctSum = whoSumTotal > 0 ? ((byWho[k].sum / whoSumTotal) * 100).toFixed(1) + '%' : '0.0%'
+    const pctProfit = whoProfitTotal !== 0 ? ((byWho[k].profit / Math.abs(whoProfitTotal)) * 100).toFixed(1) + '%' : '0.0%'
+    const dr = ws.addRow([
+      k, byWho[k].sum, pctSum, '',
+      '', k, byWho[k].profit, pctProfit,
+    ])
+    dr.height = 22
+    summaryCellStyle(dr.getCell(1))
+    summaryCellStyle(dr.getCell(2), true)
+    summaryCellStyle(dr.getCell(3))
+    dr.getCell(3).alignment = { horizontal: 'center', vertical: 'middle' }
+    summaryCellStyle(dr.getCell(6))
+    summaryCellStyle(dr.getCell(7), true)
+    summaryCellStyle(dr.getCell(8))
+    dr.getCell(8).alignment = { horizontal: 'center', vertical: 'middle' }
+    if (idx % 2 === 1) {
+      ;[1, 2, 3, 6, 7, 8].forEach(c => {
+        dr.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } }
+      })
+    }
+  })
+
+  const sumSummaryTotal = ws.addRow([
+    'ИТОГО', whoSumTotal, '100%', '',
+    '', 'ИТОГО', whoProfitTotal, '100%',
+  ])
+  sumSummaryTotal.height = 24
+  ;[1, 2, 3, 6, 7, 8].forEach(c => {
+    const cell = sumSummaryTotal.getCell(c)
+    cell.font = { bold: true }
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDBEAFE' } }
+    cell.border = {
+      top: { style: 'medium', color: { argb: 'FF2563EB' } },
+      bottom: { style: 'medium', color: { argb: 'FF2563EB' } },
+      left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      right: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+    }
+    if (c === 2 || c === 7) { cell.numFmt = '#,##0.00 ₽'; cell.alignment = { horizontal: 'right' } }
+    if (c === 3 || c === 8) cell.alignment = { horizontal: 'center' }
+  })
+
+  ws.addRow([])
+  ws.addRow([])
+
+  const chart1Data = whoKeys.map(k => ({ label: k, value: byWho[k].sum, formatted: formatMoneyReport(byWho[k].sum) }))
+  const chart1Url = drawOutgoingPieChart('Сумма по «На кого списывать»', chart1Data)
+
+  const chart2Data = whoKeys.map(k => ({ label: k, value: Math.max(0, byWho[k].profit), formatted: formatMoneyReport(byWho[k].profit) }))
+  const chart2Url = drawOutgoingPieChart('Прибыль по «На кого списывать»', chart2Data)
+
+  const toBuffer = (dataUrl) => {
+    const base64 = dataUrl.split(',')[1]
+    const bin = atob(base64)
+    const arr = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i)
+    return arr.buffer
+  }
+
+  const img1Id = wb.addImage({ buffer: toBuffer(chart1Url), extension: 'png' })
+  const img2Id = wb.addImage({ buffer: toBuffer(chart2Url), extension: 'png' })
+
+  const chartStartRow = ws.lastRow.number + 1
+  const chartH = Math.max(280, 44 + whoKeys.length * 56 + 28)
+  ws.addImage(img1Id, { tl: { col: 0, row: chartStartRow - 1 }, ext: { width: 680, height: chartH } })
+  ws.addImage(img2Id, { tl: { col: 5, row: chartStartRow - 1 }, ext: { width: 680, height: chartH } })
+
+  const rowsNeeded = Math.ceil(chartH / 21) + 2
+  for (let i = 0; i < rowsNeeded; i++) ws.addRow([])
+
+  const MIN_COL_W = 8
+  const MAX_COL_W = 55
+  const PADDING = 3
+  ws.columns.forEach((col) => {
+    let maxLen = 0
+    col.eachCell({ includeEmpty: false }, (cell) => {
+      let text = ''
+      if (cell.value === null || cell.value === undefined) return
+      if (typeof cell.value === 'number') {
+        text = new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 2 }).format(cell.value) + ' ₽'
+      } else {
+        text = String(cell.value)
+      }
+      const mult = cell.font?.bold ? 1.15 : 1
+      maxLen = Math.max(maxLen, Math.ceil(text.length * mult))
+    })
+    col.width = Math.min(Math.max(maxLen + PADDING, MIN_COL_W), MAX_COL_W)
+  })
+
+  ws.eachRow((row) => {
+    if (row.height && row.height > 24) return
+    let maxLines = 1
+    row.eachCell({ includeEmpty: false }, (cell, colNum) => {
+      if (!cell.alignment?.wrapText) return
+      const colWidth = ws.getColumn(colNum).width || 20
+      const lines = Math.ceil(String(cell.value || '').length / colWidth) || 1
+      maxLines = Math.max(maxLines, lines)
+    })
+    if (maxLines > 1) row.height = Math.min(maxLines * 15, 90)
+  })
+
+  const buf = await wb.xlsx.writeBuffer()
+  const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `Расходные_накладные_${new Date().toISOString().slice(0, 10)}.xlsx`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 const openCreateWaybill = (type) => {
   const raw = String(type || '').toLowerCase()
   const mode = raw === 'outgoing' || raw === 'returns' || raw === 'inventory' ? raw : 'incoming'
@@ -1083,6 +1502,9 @@ const mapWaybillRows = (list, type) => normalizeArray(list).map((item) => {
     deliveryId,
     toll,
     tollCompanyName,
+    sum: Number(item?.sum) || 0,
+    sumOpt: Number(item?.sum_opt) || 0,
+    warehouseName: String(item?.warehouse_name || warehouseName.value || '—'),
   }
 })
 
@@ -1340,22 +1762,58 @@ watch(() => route.params.warehouseId, () => {
   loadPage()
 })
 
-watch(() => route.params.section, () => {
-  const section = String(route.params.section || '')
+watch(() => route.params.section, (newSection, oldSection) => {
+  // сохраняем скролл для предыдущего таба
+  const prevKey = `warehouse-scroll-${warehouseId.value}-${oldSection || 'stock'}`
+  const scrollTop = window.scrollY || document.documentElement.scrollTop || document.body.scrollTop
+  sessionStorage.setItem(prevKey, String(scrollTop))
+  window.scrollTo(0, 0)
+
+  const section = String(newSection || '')
   if (section !== 'stock' && stockPhotoAbortController) stockPhotoAbortController.abort()
   if (section !== 'nomenclature' && nomenclaturePhotoAbortController) nomenclaturePhotoAbortController.abort()
-  loadPage()
+  loadPage().then(() => scheduleScrollRestore())
 })
 
+const warehouseScrollKey = () => `warehouse-scroll-${warehouseId.value}-${activeTab.value}`
+
+// Надёжное восстановление скролла: пробуем несколько раз пока страница
+// не вырастет до нужной высоты (контент рендерится асинхронно)
+const scheduleScrollRestore = () => {
+  const key = warehouseScrollKey()
+  const saved = sessionStorage.getItem(key)
+  if (!saved) return
+  const top = Number(saved)
+
+  const tryScroll = (attemptsLeft) => {
+    const pageHeight = Math.max(
+      document.body.scrollHeight,
+      document.documentElement.scrollHeight,
+    )
+    if (pageHeight >= top + window.innerHeight || attemptsLeft <= 0) {
+      window.scrollTo(0, top)
+      document.documentElement.scrollTop = top
+      document.body.scrollTop = top
+      sessionStorage.removeItem(key)
+    } else {
+      setTimeout(() => tryScroll(attemptsLeft - 1), 60)
+    }
+  }
+
+  nextTick(() => nextTick(() => tryScroll(10)))
+}
+
 onMounted(() => {
-  loadPage()
   window.addEventListener('mousedown', handleDocumentClick)
+  loadPage().then(() => scheduleScrollRestore())
 })
 
 onBeforeUnmount(() => {
   if (stockPhotoAbortController) stockPhotoAbortController.abort()
   if (nomenclaturePhotoAbortController) nomenclaturePhotoAbortController.abort()
   window.removeEventListener('mousedown', handleDocumentClick)
+  const scrollTop = window.scrollY || document.documentElement.scrollTop || document.body.scrollTop
+  sessionStorage.setItem(warehouseScrollKey(), String(scrollTop))
 })
 </script>
 
@@ -1924,6 +2382,14 @@ onBeforeUnmount(() => {
             <div class="table-title">Расходные накладные</div>
             <div class="toolbar-actions">
               <button type="button" class="secondary-btn" @click="clearSectionFilters('outgoing')">Сбросить фильтры</button>
+              <button
+                type="button"
+                class="report-btn"
+                :disabled="!outgoingSelectedRows.length"
+                @click="generateOutgoingReport"
+              >
+                Сформировать отчёт{{ outgoingSelectedRows.length ? ` (${outgoingSelectedRows.length})` : '' }}
+              </button>
               <button type="button" class="create-btn" @click="openCreateWaybill('outgoing')">
                 <i class="fas fa-plus"></i>
                 Создать накладную
@@ -1946,24 +2412,46 @@ onBeforeUnmount(() => {
                 <div v-if="!getFilterMatches('outgoingNumber').length" class="filter-dropdown-empty">Совпадений нет</div>
               </div>
             </label>
-            <label class="filter-lookup">
+            <div class="filter-lookup filter-date-range">
               <span class="filter-label">Дата создания</span>
-              <input
-                :value="filters.outgoingCreatedAt"
-                type="date"
-                class="filter-input"
-                @input="(e) => updateFilterValue('outgoingCreatedAt', e.target.value)"
-              >
-            </label>
-            <label class="filter-lookup">
+              <div class="filter-date-range-inputs">
+                <input
+                  :value="filters.outgoingCreatedAtFrom"
+                  type="date"
+                  class="filter-input filter-date-half"
+                  title="От"
+                  @input="(e) => updateFilterValue('outgoingCreatedAtFrom', e.target.value)"
+                >
+                <span class="filter-date-sep">—</span>
+                <input
+                  :value="filters.outgoingCreatedAtTo"
+                  type="date"
+                  class="filter-input filter-date-half"
+                  title="До"
+                  @input="(e) => updateFilterValue('outgoingCreatedAtTo', e.target.value)"
+                >
+              </div>
+            </div>
+            <div class="filter-lookup filter-date-range">
               <span class="filter-label">Дата проведения</span>
-              <input
-                :value="filters.outgoingConductedAt"
-                type="date"
-                class="filter-input"
-                @input="(e) => updateFilterValue('outgoingConductedAt', e.target.value)"
-              >
-            </label>
+              <div class="filter-date-range-inputs">
+                <input
+                  :value="filters.outgoingConductedAtFrom"
+                  type="date"
+                  class="filter-input filter-date-half"
+                  title="От"
+                  @input="(e) => updateFilterValue('outgoingConductedAtFrom', e.target.value)"
+                >
+                <span class="filter-date-sep">—</span>
+                <input
+                  :value="filters.outgoingConductedAtTo"
+                  type="date"
+                  class="filter-input filter-date-half"
+                  title="До"
+                  @input="(e) => updateFilterValue('outgoingConductedAtTo', e.target.value)"
+                >
+              </div>
+            </div>
             <label class="filter-lookup">
               <span class="filter-label">Кому</span>
               <input
@@ -2024,6 +2512,9 @@ onBeforeUnmount(() => {
           <table class="table">
             <thead>
               <tr>
+                <th class="col-check">
+                  <input type="checkbox" :checked="outgoingAllVisibleChecked" @change="toggleOutgoingAll">
+                </th>
                 <th>Номер</th>
                 <th>Даты</th>
                 <th>Кому</th>
@@ -2033,7 +2524,10 @@ onBeforeUnmount(() => {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="row in filteredOutgoingRows" :key="`outgoing-${row.id}`">
+              <tr v-for="row in filteredOutgoingRows" :key="`outgoing-${row.id}`" :class="{ 'row-selected': outgoingSelectedIds.has(row.id) }">
+                <td class="col-check" @click.stop>
+                  <input type="checkbox" :checked="outgoingSelectedIds.has(row.id)" @change="toggleOutgoingRow(row.id)">
+                </td>
                 <td>
                   <button type="button" class="waybill-link" @click="openWaybill(row, 'outgoing')">
                     {{ row.number }}
@@ -2052,7 +2546,7 @@ onBeforeUnmount(() => {
                 </td>
               </tr>
               <tr v-if="!filteredOutgoingRows.length">
-                <td colspan="5" class="table-empty">Данные отсутствуют</td>
+                <td colspan="6" class="table-empty">Данные отсутствуют</td>
               </tr>
             </tbody>
           </table>
@@ -2572,6 +3066,22 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.report-btn {
+  border: none;
+  border-radius: 8px;
+  padding: 8px 14px;
+  background: #16a34a;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.report-btn:hover:not(:disabled) { background: #15803d; }
+.report-btn:disabled { opacity: 0.4; cursor: default; }
+.col-check { width: 40px; text-align: center; padding: 6px; }
+.row-selected td { background: #eff6ff !important; }
+
 .main-content {
   padding: 24px;
   display: flex;
@@ -2689,6 +3199,29 @@ onBeforeUnmount(() => {
   position: relative;
   min-width: 180px;
   flex: 0 1 220px;
+}
+
+.filter-date-range {
+  min-width: 260px;
+  flex: 0 1 300px;
+}
+
+.filter-date-range-inputs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.filter-date-half {
+  flex: 1;
+  min-width: 0;
+  padding: 0 6px;
+}
+
+.filter-date-sep {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  flex-shrink: 0;
 }
 
 .filter-toggle {

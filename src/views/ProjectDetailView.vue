@@ -615,9 +615,9 @@ const contactFilters = [
     <main class="main-content">
       <div class="content-header">
         <div class="title-row">
-          <RouterLink class="back-btn" to="/projects" aria-label="Назад к проектам">
+          <button type="button" class="back-btn" aria-label="Назад к проектам" @click="router.push(String(route.query.back || '/projects'))">
             <i class="fas fa-chevron-left"></i>
-          </RouterLink>
+          </button>
           <div>
             <h1 class="page-title">
               {{ pageTitle }}
@@ -919,6 +919,9 @@ const contactFilters = [
   border: 1px solid var(--border-light);
   background: var(--bg-surface);
   transition: all 0.2s;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
 }
 
 .back-btn:hover {

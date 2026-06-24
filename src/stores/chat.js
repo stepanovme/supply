@@ -1,13 +1,24 @@
 import { defineStore } from 'pinia'
 import { useAuthStore } from './auth'
 import notificationSound from '../assets/sounds/notification.mp3'
+import badgeNotificationSound from '../assets/sounds/snap-notification.mp3'
 
 let _notifAudio = null
+let _badgeNotifAudio = null
 const _playNotificationSound = () => {
   try {
     if (!_notifAudio) _notifAudio = new Audio(notificationSound)
     _notifAudio.currentTime = 0
     _notifAudio.play().catch(() => {})
+  } catch {
+    // ignore autoplay restrictions
+  }
+}
+const _playBadgeNotificationSound = () => {
+  try {
+    if (!_badgeNotifAudio) _badgeNotifAudio = new Audio(badgeNotificationSound)
+    _badgeNotifAudio.currentTime = 0
+    _badgeNotifAudio.play().catch(() => {})
   } catch {
     // ignore autoplay restrictions
   }
@@ -38,6 +49,14 @@ export const useChatStore = defineStore('chat', {
     chatList: [],
     chatListLoading: false,
     hasUnviewedMentions: false,
+    badgeCounts: {
+      approval: 0,
+      planning_required: 0,
+      payment_required: 0,
+      attention: 0,
+      total: 0,
+    },
+    _badgeCountsReady: false,
     ws: null,
     wsReconnectTimer: null,
     wsPingTimer: null,
@@ -539,6 +558,21 @@ export const useChatStore = defineStore('chat', {
           this.hasUnviewedMentions = (data.count || 0) > 0
           break
         }
+        case 'badge_counts': {
+          const prevTotal = this.badgeCounts.total
+          this.badgeCounts = {
+            approval: data.approval || 0,
+            planning_required: data.planning_required || 0,
+            payment_required: data.payment_required || 0,
+            attention: data.attention || 0,
+            total: data.total || 0,
+          }
+          if (this._badgeCountsReady && this.badgeCounts.total > prevTotal) {
+            _playBadgeNotificationSound()
+          }
+          this._badgeCountsReady = true
+          break
+        }
       }
     },
 
@@ -564,6 +598,7 @@ export const useChatStore = defineStore('chat', {
       this.ws.onopen = () => {
         console.log('[WS] Connected')
         this.wsReconnectAttempts = 0
+        this._badgeCountsReady = false
         this.wsPingTimer = setInterval(() => {
           if (this.ws?.readyState === WebSocket.OPEN) this.ws.send('ping')
         }, 30000)

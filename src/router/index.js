@@ -16,6 +16,7 @@ import InvoiceComparisonView from '../views/InvoiceComparisonView.vue'
 import InvoicesRegistryView from '../views/InvoicesRegistryView.vue'
 import InvoiceDetailView from '../views/InvoiceDetailView.vue'
 import InvoiceDeliveryPlanView from '../views/InvoiceDeliveryPlanView.vue'
+import InvoicesGroupedView from '../views/InvoicesGroupedView.vue'
 import WarehousesView from '../views/WarehousesView.vue'
 import WarehouseDetailView from '../views/WarehouseDetailView.vue'
 import NomenclatureFormView from '../views/NomenclatureFormView.vue'
@@ -24,6 +25,7 @@ import WarehouseCategoryFormView from '../views/WarehouseCategoryFormView.vue'
 import WarehouseWaybillFormView from '../views/WarehouseWaybillFormView.vue'
 import UpdDocumentDetailView from '../views/UpdDocumentDetailView.vue'
 import DealsView from '../views/DealsView.vue'
+import PaymentsView from '../views/PaymentsView.vue'
 import DealDetailView from '../views/DealDetailView.vue'
 import DeliveriesView from '../views/DeliveriesView.vue'
 import DeliveryCreateView from '../views/DeliveryCreateView.vue'
@@ -31,6 +33,7 @@ import DeliveryDetailView from '../views/DeliveryDetailView.vue'
 import DeliveryProcessView from '../views/DeliveryProcessView.vue'
 import WikiView from '../views/WikiView.vue'
 import ChatsView from '../views/ChatsView.vue'
+import CommerceSellView from '../views/CommerceSellView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -121,9 +124,19 @@ const router = createRouter({
       component: InvoicesRegistryView,
     },
     {
+      path: '/invoices/groups',
+      name: 'invoices-groups',
+      component: InvoicesGroupedView,
+    },
+    {
       path: '/deals',
       name: 'deals',
       component: DealsView,
+    },
+    {
+      path: '/payments',
+      name: 'payments',
+      component: PaymentsView,
     },
     {
       path: '/deals/:dealId',
@@ -159,6 +172,11 @@ const router = createRouter({
       path: '/chats',
       name: 'chats',
       component: ChatsView,
+    },
+    {
+      path: '/commerce-sell',
+      name: 'commerce-sell',
+      component: CommerceSellView,
     },
     {
       path: '/requests/:requestId/invoices/compare',
