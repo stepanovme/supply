@@ -26,6 +26,7 @@ const requestExecutor = ref('')
 const requiredDate = ref('')
 const requestComment = ref('')
 const loading = ref(false)
+const pageLoading = ref(false) // перекрывает всю страницу на время onMounted
 const loadError = ref('')
 const saveLoading = ref(false)
 const saveError = ref('')
@@ -152,6 +153,21 @@ const specLoading = ref(false)
 const specItemLoading = ref(false)
 const specSaving = ref(false)
 const collapsedSections = ref(new Set())
+
+const requestSpecificationId = ref('')
+const specSectionItems = ref([])
+const specItemsLoading = ref(false)
+const expandedSections = ref(new Set())
+const allSectionsExpanded = ref(false)
+const sectionFilterOpen = ref(false)
+const selectedSections = ref([])
+const specGlobalSearch = ref('')
+const specSectionSearches = ref({})
+const specOrderQty = ref({})
+const specSummaryMap = ref({}) // { [specification_item_id]: { ordered_quantity, warehouse_quantity } }
+const specColSearch = ref({})   // { [sectionName]: { name, unit, cat, comment } }
+const activeColSearch = ref({}) // { [sectionName]: 'name'|'unit'|'cat'|'comment'|null }
+const sectionSearch = ref('')
 
 const objectLevelId = computed(() => selectedObjectLevelId.value || initialObjectLevelId.value)
 
@@ -1374,7 +1390,110 @@ const triggerFileDialog = () => {
 }
 
 const goBack = () => router.push(backLink)
+
+const saveSpecOrders = async () => {
+  if (!requestSpecificationId.value || !requestId) return
+  saveLoading.value = true
+  saveError.value = ''
+  saveSuccess.value = ''
+  try {
+    // Собираем позиции где введено количество > 0
+    const toCreate = []
+    for (const section of specSectionItems.value) {
+      for (const item of section.items) {
+        const qty = parseFloat(String(specOrderQty.value[item.id] ?? '').replace(',', '.'))
+        if (!qty || qty <= 0) continue
+        // Проверяем лимит
+        const remaining = specRemaining(item)
+        if (qty > remaining) {
+          showToast(`«${item.name}»: количество превышает остаток (${remaining.toFixed(2)})`, 'error')
+          return
+        }
+        toCreate.push({ item, qty: parseFloat(qty.toFixed(10)) })
+      }
+    }
+
+    if (!toCreate.length) {
+      showToast('Введите количество хотя бы для одной позиции.', 'error')
+      return
+    }
+
+    // Определяем стартовый num — следующий после уже имеющихся строк
+    let num = rows.value.filter(r => r.itemId).length + 1
+
+    for (const { item, qty } of toCreate) {
+      // 1. Создаём строку заявки
+      const itemBody = {
+        num,
+        name: item.name || '',
+        quantity: qty,
+        unit_id: item.unit_id || item.unit?.id || null,
+        warehouse_category_id: item.warehouse_category_id || item.warehouse_category?.id || null,
+        comment: item.comment || '',
+      }
+      // Убираем null-поля
+      Object.keys(itemBody).forEach(k => { if (itemBody[k] == null || itemBody[k] === '') delete itemBody[k] })
+
+      const itemRes = await fetch(`/apisup/supply/requests/${encodeURIComponent(requestId)}/items`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(itemBody),
+      })
+      if (!itemRes.ok) throw new Error(`item create failed for ${item.name}`)
+      const createdItem = await itemRes.json().catch(() => null)
+      const requestItemId = String(createdItem?.id || createdItem?.request_item_id || '')
+
+      // 2. Привязываем к спецификации
+      if (requestItemId) {
+        const specLinkBody = {
+          request_id: Number(requestId),
+          request_item_id: requestItemId,
+          specification_id: requestSpecificationId.value,
+          specification_item_id: item.id,
+        }
+        const linkRes = await fetch('/apisup/supply/request-specifications', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(specLinkBody),
+        })
+        if (!linkRes.ok) console.warn('[spec] request-specification link failed for item', item.id)
+      }
+
+      num++
+    }
+
+    showToast(`Добавлено позиций: ${toCreate.length}`)
+
+    // Убираем spec_id из URL
+    const newQuery = { ...route.query }
+    delete newQuery.spec_id
+    await router.replace({ query: newQuery })
+
+    // Сбрасываем состояние панели
+    specOrderQty.value = {}
+    requestSpecificationId.value = ''
+    specSectionItems.value = []
+    specSummaryMap.value = {}
+
+    // Перезагружаем позиции заявки
+    await loadRequest()
+
+  } catch (e) {
+    console.error('[spec] saveSpecOrders error:', e)
+    saveError.value = 'Не удалось сохранить позиции спецификации.'
+  } finally {
+    saveLoading.value = false
+  }
+}
+
 const saveRequest = async () => {
+  // Если открыта спецификация — сохраняем позиции из неё
+  if (requestSpecificationId.value) {
+    await saveSpecOrders()
+    return
+  }
   if (isCreateMode || !requestId || !isRequestEditable.value) return
   saveError.value = ''
   saveSuccess.value = ''
@@ -1561,6 +1680,7 @@ const loadRequest = async () => {
     }
     if (!res.ok) throw new Error('request load failed')
     const payload = await res.json()
+    requestSpecificationId.value = String(payload?.specification_id || route.query.spec_id || '')
 
     requestName.value = payload?.name || `Заявка #${requestId}`
     requestStatusName.value = String(payload?.status?.name || '')
@@ -1599,6 +1719,7 @@ const loadRequest = async () => {
       }
     }
     await loadAttachments()
+    if (requestSpecificationId.value) await loadSpecificationItems()
   } catch (error) {
     requestStatusName.value = ''
     requestLogs.value = []
@@ -1690,6 +1811,152 @@ const respondRequest = async (statusName) => {
   }
 }
 
+const loadSpecificationItems = async () => {
+  const specId = requestSpecificationId.value
+  if (!specId) return
+  specItemsLoading.value = true
+  try {
+    const [itemsRes, summaryRes] = await Promise.all([
+      fetch(`/apisup/supply/specifications/${encodeURIComponent(specId)}/items`, { credentials: 'include' }),
+      fetch(`/apisup/supply/specifications/${encodeURIComponent(specId)}/summary`, { credentials: 'include' }),
+    ])
+
+    // Items
+    if (!itemsRes.ok) {
+      console.warn('[spec] items fetch failed, status:', itemsRes.status)
+      return
+    }
+    const data = await itemsRes.json()
+    const items = Array.isArray(data) ? data : (Array.isArray(data?.items) ? data.items : [])
+    const sections = []
+    let current = null
+    items.forEach(item => {
+      if (item.section_name) {
+        current = { sectionName: item.section_name, items: [] }
+        sections.push(current)
+      } else if (current) {
+        current.items.push(item)
+      } else {
+        if (!sections.length) {
+          current = { sectionName: '—', items: [] }
+          sections.push(current)
+        }
+        current.items.push(item)
+      }
+    })
+    specSectionItems.value = sections
+    expandedSections.value = new Set() // все разделы свёрнуты по умолчанию
+
+    // Summary
+    if (summaryRes.ok) {
+      const summaryData = await summaryRes.json()
+      const arr = Array.isArray(summaryData) ? summaryData : []
+      const map = {}
+      arr.forEach(s => {
+        if (s?.specification_item_id) {
+          map[s.specification_item_id] = {
+            ordered_quantity: Number(s.ordered_quantity ?? 0),
+            warehouse_quantity: Number(s.warehouse_quantity ?? 0),
+          }
+        }
+      })
+      specSummaryMap.value = map
+    }
+  } catch (e) {
+    console.error('[spec] load error:', e)
+    specSectionItems.value = []
+  } finally {
+    specItemsLoading.value = false
+  }
+}
+
+const allSectionNames = computed(() => specSectionItems.value.map(s => s.sectionName))
+
+const filteredSectionNames = computed(() => {
+  const q = sectionSearch.value.trim().toLowerCase()
+  if (!q) return allSectionNames.value
+  return allSectionNames.value.filter(n => n.toLowerCase().includes(q))
+})
+
+const visibleSections = computed(() => {
+  const selected = selectedSections.value
+  const gSearch = specGlobalSearch.value.trim().toLowerCase()
+  return specSectionItems.value
+    .filter(s => selected.length === 0 || selected.includes(s.sectionName))
+    .map(s => {
+      const sSearch = (specSectionSearches.value[s.sectionName] || '').trim().toLowerCase()
+      const filtered = s.items.filter(item => {
+        const name = String(item.name || '').toLowerCase()
+        const cat = String(item.warehouse_category_name || '').toLowerCase()
+        const comment = String(item.comment || '').toLowerCase()
+        if (gSearch && !name.includes(gSearch) && !cat.includes(gSearch) && !comment.includes(gSearch)) return false
+        if (sSearch && !name.includes(sSearch) && !cat.includes(sSearch) && !comment.includes(sSearch)) return false
+        return true
+      })
+      return { ...s, filteredItems: filtered }
+    })
+})
+
+// Остаток: если нет данных summary — остаток равен item.quantity
+const specRemaining = (item) => {
+  const summary = specSummaryMap.value[item.id]
+  if (summary != null) return item.quantity - summary.ordered_quantity
+  return item.quantity ?? 0
+}
+
+const isSectionExpanded = (name) => expandedSections.value.has(name)
+
+const toggleColSearch = (sectionName, col) => {
+  if (!specColSearch.value[sectionName]) {
+    specColSearch.value = { ...specColSearch.value, [sectionName]: { name: '', unit: '', cat: '', comment: '' } }
+  }
+  const current = activeColSearch.value[sectionName]
+  if (current === col) {
+    // закрываем и очищаем
+    activeColSearch.value = { ...activeColSearch.value, [sectionName]: null }
+    specColSearch.value[sectionName][col] = ''
+  } else {
+    activeColSearch.value = { ...activeColSearch.value, [sectionName]: col }
+  }
+}
+
+const getFilteredItems = (section) => {
+  const searches = specColSearch.value[section.sectionName] || {}
+  const nameQ = (searches.name || '').trim().toLowerCase()
+  const unitQ = (searches.unit || '').trim().toLowerCase()
+  const catQ = (searches.cat || '').trim().toLowerCase()
+  const commentQ = (searches.comment || '').trim().toLowerCase()
+  return section.filteredItems.filter(item => {
+    if (nameQ && !String(item.name || '').toLowerCase().includes(nameQ)) return false
+    if (unitQ && !String(item.unit_name || '').toLowerCase().includes(unitQ)) return false
+    if (catQ && !String(item.warehouse_category_name || '').toLowerCase().includes(catQ)) return false
+    if (commentQ && !String(item.comment || '').toLowerCase().includes(commentQ)) return false
+    return true
+  })
+}
+
+const toggleSpecSection = (name) => {
+  const s = new Set(expandedSections.value)
+  s.has(name) ? s.delete(name) : s.add(name)
+  expandedSections.value = s
+}
+
+const toggleAllSections = () => {
+  if (expandedSections.value.size === allSectionNames.value.length) {
+    expandedSections.value = new Set()
+    allSectionsExpanded.value = false
+  } else {
+    expandedSections.value = new Set(allSectionNames.value)
+    allSectionsExpanded.value = true
+  }
+}
+
+const toggleSectionFilter = (name) => {
+  const idx = selectedSections.value.indexOf(name)
+  if (idx >= 0) selectedSections.value = selectedSections.value.filter(n => n !== name)
+  else selectedSections.value = [...selectedSections.value, name]
+}
+
 const closeDropdownsOnOutside = (event) => {
   const target = event.target
   if (!(target instanceof Node)) return
@@ -1704,6 +1971,12 @@ const closeDropdownsOnOutside = (event) => {
   }
   if (!(target instanceof Element) || !target.closest('.row-context-menu')) {
     closeRowContextMenu()
+  }
+  if (
+    !(target instanceof Element) ||
+    (!target.closest('.spec-section-filter-wrap') && !target.closest('.spec-sections-modal') && !target.closest('.spec-sections-backdrop'))
+  ) {
+    // Модальное окно разделов закрывается только кнопкой — не трогаем
   }
 }
 
@@ -1755,9 +2028,22 @@ const loadSpecifications = async () => {
 }
 
 onMounted(async () => {
-  await Promise.all([loadRequestObjects(), loadUnits(), loadWarehouseCategories()])
-  await loadRequest()
-  await loadSpecifications()
+  pageLoading.value = true
+  try {
+    await Promise.all([loadRequestObjects(), loadUnits(), loadWarehouseCategories()])
+    await loadRequest()
+    await loadSpecifications()
+    // Если spec_id пришёл через query-параметр и ещё не загружен — грузим явно
+    if (!specSectionItems.value.length) {
+      const specIdFromQuery = String(route.query.spec_id || '')
+      if (specIdFromQuery) {
+        requestSpecificationId.value = specIdFromQuery
+        await loadSpecificationItems()
+      }
+    }
+  } finally {
+    pageLoading.value = false
+  }
   window.addEventListener('mousedown', closeDropdownsOnOutside)
   window.addEventListener('mousemove', onFillMouseMove)
   window.addEventListener('mouseup', stopFillDown)
@@ -1772,14 +2058,15 @@ onMounted(async () => {
 
 <template>
   <div class="page">
-    <div v-if="loading" class="fullscreen-loader">
+    <div v-if="pageLoading" class="fullscreen-loader">
       <div class="loader-spinner"></div>
-      <span>Загрузка заявки...</span>
+      <span>{{ specItemsLoading ? 'Загрузка спецификации...' : 'Загрузка заявки...' }}</span>
     </div>
     <template v-else>
       <TopNav :links="navLinks" />
       <main class="main-content">
         <div v-if="loadError" class="inline-state error">{{ loadError }}</div>
+
         <div class="content-header">
         <div class="header-fields">
           <button class="back-btn" type="button" @click="goBack" aria-label="Вернуться назад">
@@ -1981,7 +2268,180 @@ onMounted(async () => {
         </div>
       </div>
 
-      <div class="table-wrapper" @paste="handlePaste">
+      <!-- Панель спецификации — показывается под save-row -->
+      <div v-if="requestSpecificationId || specItemsLoading" class="spec-panel">
+        <!-- Шапка панели -->
+        <div class="spec-panel-header">
+          <div class="spec-panel-title">
+            <i class="fas fa-clipboard-list"></i>
+            Спецификация
+          </div>
+          <div class="spec-panel-toolbar">
+            <button
+              class="spec-toolbar-btn"
+              :class="{ active: selectedSections.length > 0 }"
+              @click="sectionFilterOpen = true"
+            >
+              <i class="fas fa-layer-group"></i>
+              Разделы
+              <span v-if="selectedSections.length" class="spec-badge">{{ selectedSections.length }}</span>
+            </button>
+            <button class="spec-toolbar-btn" @click="toggleAllSections">
+              <i :class="expandedSections.size === allSectionNames.length ? 'fas fa-minus-square' : 'fas fa-plus-square'"></i>
+              {{ expandedSections.size === allSectionNames.length ? 'Свернуть все' : 'Развернуть все' }}
+            </button>
+          </div>
+        </div>
+
+        <!-- Загрузка -->
+        <div v-if="specItemsLoading" class="spec-state-row">
+          <i class="fas fa-spinner fa-spin"></i>
+          <span>Загрузка спецификации...</span>
+        </div>
+        <!-- Нет данных -->
+        <div v-else-if="!specSectionItems.length" class="spec-state-row muted">
+          <i class="fas fa-inbox"></i>
+          <span>Позиции спецификации не найдены</span>
+        </div>
+
+        <!-- Разделы -->
+        <div v-for="section in visibleSections" :key="section.sectionName" class="spec-section">
+          <div class="spec-section-head" @click="toggleSpecSection(section.sectionName)">
+            <i class="spec-section-chevron fas" :class="isSectionExpanded(section.sectionName) ? 'fa-chevron-down' : 'fa-chevron-right'"></i>
+            <span class="spec-section-name">{{ section.sectionName }}</span>
+            <span class="spec-section-badge">{{ section.items.length }}</span>
+          </div>
+
+          <div v-if="isSectionExpanded(section.sectionName)" class="spec-section-body">
+            <div class="spec-table-wrap">
+              <table class="spec-table">
+                <thead>
+                  <tr>
+                    <th class="spec-col-num spec-th-plain"><span>№</span></th>
+                    <th class="spec-col-name">
+                      <div class="spec-th-inner">
+                        <span>Наименование</span>
+                        <button class="spec-col-search-btn" :class="{ active: specColSearch[section.sectionName]?.name }" @click.stop="toggleColSearch(section.sectionName, 'name')"><i class="fas fa-search"></i></button>
+                      </div>
+                      <input v-if="activeColSearch[section.sectionName] === 'name'" v-model="specColSearch[section.sectionName].name" class="spec-col-input" type="text" placeholder="Поиск..." @click.stop autofocus>
+                    </th>
+                    <th class="spec-col-qty spec-th-plain"><span>Кол-во</span></th>
+                    <th class="spec-col-unit">
+                      <div class="spec-th-inner">
+                        <span>Ед. изм.</span>
+                        <button class="spec-col-search-btn" :class="{ active: specColSearch[section.sectionName]?.unit }" @click.stop="toggleColSearch(section.sectionName, 'unit')"><i class="fas fa-search"></i></button>
+                      </div>
+                      <input v-if="activeColSearch[section.sectionName] === 'unit'" v-model="specColSearch[section.sectionName].unit" class="spec-col-input" type="text" placeholder="Поиск..." @click.stop autofocus>
+                    </th>
+                    <th class="spec-col-price spec-th-plain"><span>Цена</span></th>
+                    <th class="spec-col-cat">
+                      <div class="spec-th-inner">
+                        <span>Категория</span>
+                        <button class="spec-col-search-btn" :class="{ active: specColSearch[section.sectionName]?.cat }" @click.stop="toggleColSearch(section.sectionName, 'cat')"><i class="fas fa-search"></i></button>
+                      </div>
+                      <input v-if="activeColSearch[section.sectionName] === 'cat'" v-model="specColSearch[section.sectionName].cat" class="spec-col-input" type="text" placeholder="Поиск..." @click.stop autofocus>
+                    </th>
+                    <th class="spec-col-comment">
+                      <div class="spec-th-inner">
+                        <span>Комментарий</span>
+                        <button class="spec-col-search-btn" :class="{ active: specColSearch[section.sectionName]?.comment }" @click.stop="toggleColSearch(section.sectionName, 'comment')"><i class="fas fa-search"></i></button>
+                      </div>
+                      <input v-if="activeColSearch[section.sectionName] === 'comment'" v-model="specColSearch[section.sectionName].comment" class="spec-col-input" type="text" placeholder="Поиск..." @click.stop autofocus>
+                    </th>
+                    <th class="spec-col-stock spec-th-plain"><span>Остаток</span></th>
+                    <th class="spec-col-order spec-th-plain"><span>Заказать</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(item, idx) in getFilteredItems(section)" :key="item.id" class="spec-row">
+                    <td class="spec-col-num">{{ idx + 1 }}</td>
+                    <td class="spec-col-name">{{ item.name || '' }}</td>
+                    <td class="spec-col-qty spec-num">{{ item.quantity != null ? item.quantity : '' }}</td>
+                    <td class="spec-col-unit">{{ item.unit_name || '' }}</td>
+                    <td class="spec-col-price spec-num">{{ item.price != null ? Number(item.price).toLocaleString('ru-RU') : '' }}</td>
+                    <td class="spec-col-cat">{{ item.warehouse_category_name || '' }}</td>
+                    <td class="spec-col-comment spec-muted">{{ item.comment || '' }}</td>
+                    <td class="spec-col-stock spec-num">
+                      <span :class="{
+                        'spec-stock-zero': specRemaining(item) === 0,
+                        'spec-stock-over': specRemaining(item) < 0,
+                      }">
+                        {{ specRemaining(item).toFixed(2) }}
+                      </span>
+                    </td>
+                    <td class="spec-col-order">
+                      <template v-if="specRemaining(item) === 0">
+                        <span class="spec-order-done">Заказ завершён</span>
+                      </template>
+                      <template v-else-if="specRemaining(item) < 0">
+                        <span class="spec-order-over">Лимит превышен</span>
+                      </template>
+                      <template v-else>
+                        <input
+                          v-model="specOrderQty[item.id]"
+                          class="spec-order-input"
+                          type="text"
+                          inputmode="decimal"
+                          placeholder="0"
+                          @input="e => { const v = parseFloat(String(e.target.value).replace(',','.')); const max = specRemaining(item); if (!isNaN(v) && v > max) specOrderQty[item.id] = String(max); else if (!isNaN(v) && v < 0) specOrderQty[item.id] = ''; }"
+                        >
+                      </template>
+                    </td>
+                  </tr>
+                  <tr v-if="getFilteredItems(section).length === 0">
+                    <td colspan="9" class="spec-no-results">
+                      <i class="fas fa-search"></i> Ничего не найдено
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Модальное окно выбора разделов спецификации -->
+      <div v-if="sectionFilterOpen" class="modal-backdrop spec-sections-backdrop">
+        <div class="spec-sections-modal">
+          <div class="spec-sections-modal-head">
+            <div class="spec-sections-modal-title">
+              <i class="fas fa-layer-group"></i>
+              Разделы спецификации
+            </div>
+            <button class="spec-sections-close-btn" @click="sectionFilterOpen = false">
+              <i class="fas fa-times"></i>
+            </button>
+          </div>
+          <div class="spec-sections-modal-search">
+            <i class="fas fa-search"></i>
+            <input v-model="sectionSearch" type="text" placeholder="Найти раздел..." class="spec-sections-search-input" autofocus>
+            <span v-if="selectedSections.length" class="spec-sections-sel-count">{{ selectedSections.length }} выбр.</span>
+          </div>
+          <div class="spec-sections-modal-list">
+            <label
+              v-for="name in filteredSectionNames"
+              :key="name"
+              class="spec-sections-modal-item"
+              :class="{ checked: selectedSections.includes(name) }"
+            >
+              <span class="spec-sections-checkbox" :class="{ checked: selectedSections.includes(name) }">
+                <i v-if="selectedSections.includes(name)" class="fas fa-check"></i>
+              </span>
+              <input type="checkbox" :checked="selectedSections.includes(name)" style="display:none" @change="toggleSectionFilter(name)">
+              <span class="spec-sections-item-label">{{ name }}</span>
+            </label>
+            <div v-if="filteredSectionNames.length === 0" class="spec-sections-empty">
+              <i class="fas fa-search"></i> Ничего не найдено
+            </div>
+          </div>
+          <div class="spec-sections-modal-footer">
+            <button class="btn" @click="selectedSections = []; sectionSearch = ''">Сбросить всё</button>
+            <button class="btn btn-primary" @click="sectionFilterOpen = false; sectionSearch = ''">Применить</button>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="!requestSpecificationId" class="table-wrapper" @paste="handlePaste">
         <table class="request-table">
           <colgroup>
             <col class="col-check">
@@ -3437,5 +3897,457 @@ onMounted(async () => {
 
 .btn-danger:hover {
   background: #fee2e2;
+}
+
+/* ===================== Spec panel ===================== */
+.spec-panel {
+  flex-shrink: 0;
+  background: #fff;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg, 12px);
+  box-shadow: 0 1px 4px rgba(15,23,42,0.06);
+}
+
+.spec-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border-light);
+  background: #fafbfc;
+  border-radius: var(--radius-lg, 12px) var(--radius-lg, 12px) 0 0;
+  flex-wrap: wrap;
+}
+
+.spec-panel-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.spec-panel-title i {
+  color: var(--brand-primary, #2563eb);
+  font-size: 13px;
+}
+
+.spec-panel-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.spec-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border-light);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.12s;
+  white-space: nowrap;
+}
+.spec-toolbar-btn:hover {
+  border-color: var(--brand-primary, #2563eb);
+  color: var(--brand-primary, #2563eb);
+}
+.spec-toolbar-btn.active {
+  border-color: var(--brand-primary, #2563eb);
+  color: var(--brand-primary, #2563eb);
+  background: var(--brand-soft, #eff6ff);
+}
+
+.spec-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  background: var(--brand-primary, #2563eb);
+  color: #fff;
+  border-radius: 20px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* Состояния загрузки / пусто */
+.spec-state-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 20px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.spec-state-row.muted { color: var(--text-tertiary, #94a3b8); }
+.spec-state-row i { font-size: 15px; }
+
+/* Раздел */
+.spec-section {
+  border-top: 1px solid var(--border-light);
+}
+.spec-section:first-of-type { border-top: none; }
+
+.spec-section-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 16px;
+  cursor: pointer;
+  background: #fafbfc;
+  user-select: none;
+  transition: background 0.1s;
+}
+.spec-section-head:hover { background: #f1f5f9; }
+
+.spec-section-chevron {
+  font-size: 10px;
+  color: #94a3b8;
+  width: 11px;
+  flex-shrink: 0;
+}
+
+.spec-section-name {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-primary);
+  flex: 1;
+}
+
+.spec-section-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 17px;
+  padding: 0 6px;
+  background: #e2e8f0;
+  color: #64748b;
+  border-radius: 20px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+/* Тело раздела */
+.spec-section-body {
+  background: #fff;
+  border-top: 1px solid var(--border-light);
+}
+
+.spec-table-wrap {
+  overflow-x: auto;
+}
+
+/* Таблица */
+.spec-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.spec-table th {
+  padding: 0;
+  background: #f8fafc;
+  color: #64748b;
+  font-weight: 600;
+  text-align: left;
+  border-bottom: 1px solid var(--border-light);
+  vertical-align: middle;
+  position: relative;
+}
+
+/* Заголовки без поиска — выравниваем одинаково */
+.spec-th-plain {
+  padding: 7px 10px;
+  white-space: nowrap;
+}
+
+.spec-th-inner {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 7px 10px;
+  white-space: nowrap;
+  min-height: 32px;
+}
+
+.spec-col-search-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: #cbd5e1;
+  border-radius: 4px;
+  transition: all 0.1s;
+  padding: 0;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.spec-col-search-btn:hover { color: var(--brand-primary, #2563eb); }
+.spec-col-search-btn.active { color: var(--brand-primary, #2563eb); }
+.spec-col-search-btn i { font-size: 9px; }
+
+/* input поиска прямо в заголовке — вместо обычного текста */
+.spec-col-input {
+  display: block;
+  width: 100%;
+  height: 30px;
+  border: none;
+  border-top: 1px solid #e2e8f0;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 400;
+  padding: 0 10px;
+  outline: none;
+}
+.spec-col-input::placeholder { color: #94a3b8; font-style: italic; }
+.spec-col-input:focus {
+  background: #eff6ff;
+  border-top-color: var(--brand-primary, #2563eb);
+}
+
+.spec-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid #f1f5f9;
+  color: var(--text-primary);
+  vertical-align: middle;
+}
+.spec-table tr:last-child td { border-bottom: none; }
+
+.spec-row:hover td { background: #f8fafc; }
+
+.spec-num { text-align: right; font-variant-numeric: tabular-nums; }
+.spec-muted { color: #94a3b8; }
+
+.spec-col-num { width: 36px; text-align: center; color: #94a3b8; font-size: 11px; }
+.spec-table th.spec-col-num { text-align: center; }
+.spec-col-qty { width: 68px; text-align: right; }
+.spec-col-unit { width: 78px; }
+.spec-col-price { width: 90px; text-align: right; }
+.spec-col-stock { width: 72px; text-align: right; }
+.spec-col-order { width: 110px; }
+
+.spec-stock-ok   { color: #16a34a; font-weight: 600; }
+.spec-stock-zero { color: #94a3b8; }
+.spec-stock-over { color: #dc2626; font-weight: 600; }
+
+.spec-order-done {
+  display: inline-block;
+  font-size: 11px;
+  color: #16a34a;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.spec-order-over {
+  display: inline-block;
+  font-size: 11px;
+  color: #dc2626;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.spec-col-cat { min-width: 128px; }
+.spec-col-comment { min-width: 108px; }
+.spec-col-name { min-width: 180px; }
+
+.spec-order-input {
+  width: 72px;
+  height: 24px;
+  border: 1px solid #e2e8f0;
+  border-radius: 5px;
+  padding: 0 6px;
+  font-size: 12px;
+  background: #fff;
+  color: var(--text-primary);
+  text-align: right;
+  transition: border-color 0.1s;
+}
+.spec-order-input:focus {
+  outline: none;
+  border-color: var(--brand-primary, #2563eb);
+  box-shadow: 0 0 0 2px #eff6ff;
+}
+.spec-order-input::placeholder { color: #cbd5e1; }
+
+.spec-no-results {
+  text-align: center;
+  padding: 14px;
+  color: #94a3b8;
+  font-size: 12px;
+}
+.spec-no-results i { margin-right: 6px; }
+
+/* Модальное окно разделов */
+.spec-sections-backdrop {
+  /* перекрывает страницу, но клик мимо НЕ закрывает — убрали @click.self */
+}
+
+.spec-sections-modal {
+  width: min(480px, 96vw);
+  max-height: 78vh;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(15,23,42,0.18), 0 4px 16px rgba(15,23,42,0.08);
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+}
+
+.spec-sections-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid #f1f5f9;
+  flex-shrink: 0;
+  background: #fff;
+}
+
+.spec-sections-modal-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 15px;
+  color: #0f172a;
+}
+.spec-sections-modal-title i {
+  color: var(--brand-primary, #2563eb);
+  font-size: 14px;
+}
+
+.spec-sections-close-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  background: #f1f5f9;
+  border-radius: 8px;
+  cursor: pointer;
+  color: #64748b;
+  font-size: 12px;
+  transition: all 0.12s;
+}
+.spec-sections-close-btn:hover {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+.spec-sections-modal-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #f1f5f9;
+  flex-shrink: 0;
+  background: #fafbfc;
+}
+.spec-sections-modal-search > i { color: #94a3b8; font-size: 13px; flex-shrink: 0; }
+
+.spec-sections-search-input {
+  flex: 1;
+  border: none;
+  background: none;
+  font-size: 13px;
+  color: #0f172a;
+  outline: none;
+}
+.spec-sections-search-input::placeholder { color: #94a3b8; }
+
+.spec-sections-sel-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--brand-primary, #2563eb);
+  background: #eff6ff;
+  padding: 2px 8px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+
+.spec-sections-modal-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.spec-sections-modal-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 20px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #334155;
+  transition: background 0.1s;
+}
+.spec-sections-modal-item:hover { background: #f8fafc; }
+.spec-sections-modal-item.checked { background: #eff6ff; }
+.spec-sections-modal-item.checked .spec-sections-item-label { color: var(--brand-primary, #2563eb); font-weight: 500; }
+
+.spec-sections-checkbox {
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid #cbd5e1;
+  border-radius: 5px;
+  background: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all 0.12s;
+  font-size: 9px;
+  color: #fff;
+}
+.spec-sections-checkbox.checked {
+  background: var(--brand-primary, #2563eb);
+  border-color: var(--brand-primary, #2563eb);
+}
+
+.spec-sections-item-label {
+  flex: 1;
+  line-height: 1.4;
+}
+
+.spec-sections-empty {
+  padding: 28px 20px;
+  text-align: center;
+  font-size: 13px;
+  color: #94a3b8;
+}
+.spec-sections-empty i { margin-right: 6px; }
+
+.spec-sections-modal-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 20px;
+  border-top: 1px solid #f1f5f9;
+  flex-shrink: 0;
+  background: #fafbfc;
+}
+
+.spec-empty {
+  text-align: center;
+  padding: 20px;
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 </style>

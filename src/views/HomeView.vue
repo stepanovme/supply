@@ -31,6 +31,14 @@ const isRequestObjectDropdownOpen = ref(false)
 const isSubmittingRequest = ref(false)
 const createRequestError = ref('')
 const requestLookupRef = ref(null)
+// Спецификации при создании заявки
+const specifications = ref([])
+const specificationsLoading = ref(false)
+const budgetMode = ref(null) // 'from_budget' | 'not_budget' | null
+const specQuery = ref('')
+const selectedSpecId = ref('')
+const specLookupRef = ref(null)
+const isSpecDropdownOpen = ref(false)
 const isAttachInvoiceModalOpen = ref(false)
 const attachInvoiceRequestId = ref(null)
 const invoiceFiles = ref([])
@@ -604,6 +612,12 @@ const filteredRequestObjects = computed(() => {
   return requestObjects.value.filter((item) => String(item.name || '').toLowerCase().includes(query))
 })
 
+const filteredSpecifications = computed(() => {
+  const q = specQuery.value.trim().toLowerCase()
+  if (!q) return specifications.value
+  return specifications.value.filter((s) => String(s.name || '').toLowerCase().includes(q))
+})
+
 const filteredSuppliers = computed(() => {
   const q = supplierQuery.value.trim().toLowerCase()
   if (!q) return counterparties.value
@@ -712,6 +726,11 @@ const openCreateRequestModal = async () => {
   selectedRequestObjectId.value = ''
   createRequestError.value = ''
   isRequestObjectDropdownOpen.value = false
+  specifications.value = []
+  budgetMode.value = null
+  specQuery.value = ''
+  selectedSpecId.value = ''
+  isSpecDropdownOpen.value = false
   await loadRequestObjects()
 }
 
@@ -722,6 +741,11 @@ const closeCreateRequestModal = () => {
   requestObjectsError.value = ''
   createRequestError.value = ''
   isRequestObjectDropdownOpen.value = false
+  specifications.value = []
+  budgetMode.value = null
+  specQuery.value = ''
+  selectedSpecId.value = ''
+  isSpecDropdownOpen.value = false
 }
 
 const openAttachInvoiceModal = async (requestId) => {
@@ -1058,11 +1082,34 @@ const onRequestObjectInput = () => {
   isRequestObjectDropdownOpen.value = true
 }
 
-const selectRequestObject = (item) => {
+const selectRequestObject = async (item) => {
   selectedRequestObjectId.value = item.id
   requestObjectQuery.value = item.name || ''
   isRequestObjectDropdownOpen.value = false
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+
+  // Сбрасываем выбор спецификации
+  specifications.value = []
+  budgetMode.value = null
+  specQuery.value = ''
+  selectedSpecId.value = ''
+
+  // Загружаем спецификации для выбранного объекта
+  specificationsLoading.value = true
+  try {
+    const res = await fetch(
+      `/apisup/supply/specifications/by-object-levels/${encodeURIComponent(item.id)}?status_id=c532989f-17ba-11f1-aa8c-bc241127d0bd`,
+      { credentials: 'include' },
+    )
+    if (res.ok) {
+      const data = await res.json()
+      specifications.value = Array.isArray(data) ? data : []
+    }
+  } catch {
+    specifications.value = []
+  } finally {
+    specificationsLoading.value = false
+  }
 }
 
 const submitCreateRequest = () => {
@@ -1071,21 +1118,40 @@ const submitCreateRequest = () => {
     createRequestError.value = 'Выберите проект из списка.'
     return
   }
+  if (specifications.value.length > 0 && budgetMode.value === null) {
+    createRequestError.value = 'Выберите тип заявки: из бюджета или не из бюджета.'
+    return
+  }
+  if (budgetMode.value === 'from_budget' && !selectedSpecId.value) {
+    createRequestError.value = 'Выберите спецификацию из списка.'
+    return
+  }
   isSubmittingRequest.value = true
+  const body = { object_levels_id: selectedRequestObjectId.value }
+  if (budgetMode.value === 'from_budget' && selectedSpecId.value) {
+    body.specification_id = selectedSpecId.value
+  }
   fetch('/apisup/supply/requests', {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ object_levels_id: selectedRequestObjectId.value }),
+    body: JSON.stringify(body),
   })
     .then(async (res) => {
       if (!res.ok) throw new Error('request create failed')
       const payload = await res.json()
       const requestId = payload?.id || payload?.request_id || payload?.data?.id
       if (!requestId) throw new Error('missing request id')
+      const specId = budgetMode.value === 'from_budget' ? selectedSpecId.value : ''
       closeCreateRequestModal()
       await loadRequests()
-      router.push({ path: `/requests/${requestId}`, query: { back: route.fullPath } })
+      router.push({
+        path: `/requests/${requestId}`,
+        query: {
+          back: route.fullPath,
+          ...(specId ? { spec_id: specId } : {}),
+        },
+      })
     })
     .catch(() => {
       createRequestError.value = 'Не удалось создать заявку.'
@@ -1102,6 +1168,11 @@ const handleWindowClick = (event) => {
 
   if (!lookupEl || !lookupEl.contains(target)) {
     isRequestObjectDropdownOpen.value = false
+  }
+
+  const specEl = specLookupRef.value
+  if (!specEl || !specEl.contains(target)) {
+    isSpecDropdownOpen.value = false
   }
 
   const supplierEl = supplierLookupRef.value
@@ -1303,10 +1374,29 @@ const openInvoicesCompare = (id) => {
   })
 }
 
+const requestsTableRef = ref(null)
+const REQUESTS_SCROLL_KEY = 'requests-list-scroll'
+
+const getTableScrollEl = () => requestsTableRef.value?.$el?.querySelector('.table-scroll') ?? null
+
 onMounted(() => {
   notificationAudio.value = new Audio(notificationSoundUrl)
   notificationAudio.value.preload = 'auto'
-  loadRequests()
+  loadRequests().then(() => {
+    const saved = sessionStorage.getItem(REQUESTS_SCROLL_KEY)
+    if (!saved) return
+    const top = Number(saved)
+    const tryScroll = (attemptsLeft) => {
+      const el = getTableScrollEl()
+      if (el && (el.scrollHeight >= top + el.clientHeight || attemptsLeft <= 0)) {
+        el.scrollTop = top
+        sessionStorage.removeItem(REQUESTS_SCROLL_KEY)
+      } else if (attemptsLeft > 0) {
+        setTimeout(() => tryScroll(attemptsLeft - 1), 60)
+      }
+    }
+    nextTick(() => nextTick(() => tryScroll(10)))
+  })
   loadPendingApprovalsCount()
   window.addEventListener('mousedown', handleWindowClick)
   window.addEventListener('focus', refreshCounterpartiesOnFocus)
@@ -1321,6 +1411,10 @@ onBeforeUnmount(() => {
   notificationAudio.value = null
   window.removeEventListener('mousedown', handleWindowClick)
   window.removeEventListener('focus', refreshCounterpartiesOnFocus)
+  const el = getTableScrollEl()
+  if (el) {
+    sessionStorage.setItem(REQUESTS_SCROLL_KEY, String(el.scrollTop))
+  }
 })
 
 const getBadge = (chatId) => {
@@ -1381,6 +1475,7 @@ const handleCloseChat = () => {
       </div>
       <FilterTabs :tabs="filterTabs" @select="setQuickFilterTab" @reset="resetFilters" />
       <RequestsTable
+        ref="requestsTableRef"
         :rows="rows"
         :expanded-rows="expandedRows"
         :checked-all="checkedAll"
@@ -1426,7 +1521,7 @@ const handleCloseChat = () => {
     <ChatPanel v-if="chat.panelOpen" @close="handleCloseChat" />
 
     <div v-if="isCreateRequestModalOpen" class="modal-backdrop" @click="closeCreateRequestModal">
-      <div class="modal-card" @click.stop="isRequestObjectDropdownOpen = false">
+      <div class="modal-card" @click.stop="isRequestObjectDropdownOpen = false; isSpecDropdownOpen = false">
         <div class="modal-title">Создать заявку</div>
         <div class="modal-subtitle">Выберите проект (уровень вида работ)</div>
 
@@ -1468,6 +1563,57 @@ const handleCloseChat = () => {
               >
                 Ничего не найдено
               </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Тип заявки: из бюджета или нет — показываем только если есть спецификации -->
+        <div v-if="selectedRequestObjectId && !specificationsLoading && specifications.length > 0" class="modal-field">
+          <span>Тип заявки</span>
+          <div class="budget-radio-group">
+            <label class="budget-radio-option" :class="{ active: budgetMode === 'from_budget' }">
+              <input v-model="budgetMode" type="radio" value="from_budget">
+              <span>Из бюджета</span>
+            </label>
+            <label class="budget-radio-option" :class="{ active: budgetMode === 'not_budget' }">
+              <input v-model="budgetMode" type="radio" value="not_budget">
+              <span>Не из бюджета</span>
+            </label>
+          </div>
+        </div>
+
+        <div v-if="specificationsLoading" class="lookup-empty">
+          <i class="fas fa-spinner fa-spin"></i> Загрузка спецификаций...
+        </div>
+
+        <!-- Выбор спецификации — только если выбрано «Из бюджета» -->
+        <div v-if="budgetMode === 'from_budget'" class="modal-field">
+          <span>Спецификация</span>
+          <div ref="specLookupRef" class="lookup-wrap" @click.stop>
+            <div class="input-with-icon">
+              <input
+                v-model="specQuery"
+                class="form-input"
+                type="text"
+                placeholder="Поиск по спецификации..."
+                @focus="isSpecDropdownOpen = true"
+                @input="selectedSpecId = ''; isSpecDropdownOpen = true"
+              >
+              <button class="field-icon-btn" type="button" @click="isSpecDropdownOpen = !isSpecDropdownOpen">
+                <i class="fas fa-chevron-down"></i>
+              </button>
+            </div>
+            <div v-if="isSpecDropdownOpen" class="lookup-list lookup-list-overlay select-dropdown">
+              <button
+                v-for="spec in filteredSpecifications"
+                :key="spec.id"
+                class="lookup-item"
+                type="button"
+                @click="selectedSpecId = spec.id; specQuery = spec.name; isSpecDropdownOpen = false"
+              >
+                {{ spec.name || 'Без названия' }}
+              </button>
+              <div v-if="filteredSpecifications.length === 0" class="lookup-empty">Ничего не найдено</div>
             </div>
           </div>
         </div>
@@ -1950,6 +2096,39 @@ const handleCloseChat = () => {
 
 .modal-error {
   margin-top: 10px;
+}
+
+.budget-radio-group {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.budget-radio-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  border: 1.5px solid var(--border-light);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg-body);
+  transition: border-color 0.15s, background 0.15s;
+  flex: 1;
+  justify-content: center;
+}
+
+.budget-radio-option input[type="radio"] {
+  display: none;
+}
+
+.budget-radio-option.active {
+  border-color: var(--brand-primary);
+  background: var(--brand-soft);
+  color: var(--brand-primary);
+  font-weight: 600;
 }
 
 .modal-actions {

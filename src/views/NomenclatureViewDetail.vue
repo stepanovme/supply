@@ -457,6 +457,139 @@ const openDelivery = (deliveryId) => {
   })
 }
 
+const waybillModeByType = { 1: 'incoming', 2: 'outgoing', 3: 'returns', 4: 'inventory' }
+
+const movementExportLoading = ref(false)
+
+const exportMovementExcel = async () => {
+  if (!movement.value.length) return
+  movementExportLoading.value = true
+  try {
+    const ExcelJS = await import('exceljs')
+    const wb = new ExcelJS.Workbook()
+    wb.creator = 'Supply'
+
+    const ws = wb.addWorksheet('Движение товара', {
+      pageSetup: {
+        paperSize: 9,
+        orientation: 'landscape',
+        fitToPage: true,
+        fitToWidth: 1,
+        fitToHeight: 0,
+        margins: { left: 0.5, right: 0.5, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3 },
+      },
+    })
+
+    const nomenclatureName = detail.value?.name || ''
+    const unitName = detail.value?.unit?.name || detail.value?.unit_name || ''
+
+    // Заголовок
+    const titleRow = ws.addRow([`Движение товара: ${nomenclatureName}`])
+    ws.mergeCells(`A${titleRow.number}:F${titleRow.number}`)
+    titleRow.getCell(1).font = { bold: true, size: 14 }
+    titleRow.getCell(1).alignment = { horizontal: 'center' }
+    titleRow.height = 24
+
+    if (unitName) {
+      const subRow = ws.addRow([`Единица измерения: ${unitName}`])
+      ws.mergeCells(`A${subRow.number}:F${subRow.number}`)
+      subRow.getCell(1).font = { size: 11, color: { argb: 'FF64748B' } }
+      subRow.getCell(1).alignment = { horizontal: 'center' }
+    }
+
+    ws.addRow([])
+
+    // Шапка
+    const headerRow = ws.addRow(['Дата', 'Операция', 'Товар', 'Кол-во', 'Ед.изм.', 'Документ'])
+    headerRow.eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: 'FF1E293B' } }
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } }
+      cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }
+      cell.border = {
+        top: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+        bottom: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+        left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+        right: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      }
+    })
+    headerRow.height = 28
+
+    const borderStyle = {
+      top: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      bottom: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      right: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+    }
+
+    movement.value.forEach((item) => {
+      const isOutgoing = String(item.movementValue || '').startsWith('-')
+      const docParts = []
+      if (item.warehouseReceiptNum) docParts.push(`Накладная #${item.warehouseReceiptNum}`)
+      if (item.invoiceId && item.invoiceNum !== '—') docParts.push(`Счёт #${item.invoiceNum}`)
+      if (item.deliveryId && item.deliveryNum !== '—') docParts.push(`Доставка #${item.deliveryNum}`)
+      if (item.updDocumentId) docParts.push('УПД')
+
+      const dr = ws.addRow([
+        formatDate(item.documentDate),
+        item.typeLabel,
+        item.nomenclatureName,
+        item.movementValue || item.quantity,
+        item.unitName,
+        docParts.join(', ') || '—',
+      ])
+      dr.eachCell((cell, col) => {
+        cell.border = borderStyle
+        cell.alignment = { vertical: 'middle', wrapText: col === 3 || col === 6 }
+        if (col === 4) {
+          // кол-во — подсветка цветом
+          cell.alignment = { horizontal: 'right', vertical: 'middle' }
+          cell.font = { color: { argb: isOutgoing ? 'FFDC2626' : 'FF16A34A' }, bold: true }
+        }
+      })
+      dr.height = 18
+    })
+
+    // Авто-ширина столбцов
+    const colWidths = [16, 20, 40, 12, 10, 36]
+    ws.columns.forEach((col, i) => { col.width = colWidths[i] || 16 })
+
+    // Итого
+    ws.addRow([])
+    const totalPos = movement.value.filter(r => !String(r.movementValue || '').startsWith('-')).reduce((s, r) => s + Number(r.quantity || 0), 0)
+    const totalNeg = movement.value.filter(r => String(r.movementValue || '').startsWith('-')).reduce((s, r) => s + Number(r.quantity || 0), 0)
+    const sumRow = ws.addRow([`Всего приход: ${totalPos} ${unitName}   |   Всего расход: ${totalNeg} ${unitName}`])
+    ws.mergeCells(`A${sumRow.number}:F${sumRow.number}`)
+    sumRow.getCell(1).font = { bold: true, size: 11 }
+    sumRow.getCell(1).alignment = { horizontal: 'right' }
+
+    // Скачивание
+    const buf = await wb.xlsx.writeBuffer()
+    const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    const safeName = (nomenclatureName || 'товар').replace(/[\\/:*?"<>|]/g, '_').slice(0, 60)
+    a.download = `Движение_${safeName}.xlsx`
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    console.error('[export] movement excel error:', e)
+  } finally {
+    movementExportLoading.value = false
+  }
+}
+
+const openWarehouseReceipt = (item) => {
+  const id = String(item?.warehouseReceiptId || '')
+  const wid = warehouseId.value
+  if (!id || !wid) return
+  const mode = waybillModeByType[item?.warehouseReceiptType] || 'incoming'
+  router.push({
+    name: 'warehouse-waybill-detail',
+    params: { warehouseId: wid, mode, receiptId: id },
+  })
+}
+
 const revokePhotoUrls = () => {
   photos.value.forEach((item) => {
     if (item.previewUrl) URL.revokeObjectURL(item.previewUrl)
@@ -544,6 +677,9 @@ const loadMovement = async () => {
     invoiceNum: String(item?.invoice?.num || item?.invoice_num || '—'),
     deliveryId: String(item?.delivery_id || item?.delivery?.id || ''),
     deliveryNum: String(item?.delivery?.num || item?.delivery_num || '—'),
+    warehouseReceiptId: String(item?.warehouse_receipt_id || ''),
+    warehouseReceiptNum: item?.warehouse_receipt_num != null ? String(item.warehouse_receipt_num) : '',
+    warehouseReceiptType: item?.warehouse_receipt_type ?? null,
   }))
   rows.sort((a, b) => String(b.sortDate || '').localeCompare(String(a.sortDate || '')))
   movement.value = rows
@@ -1061,6 +1197,12 @@ onBeforeUnmount(revokePhotoUrls)
           <section v-else-if="tab === 'movement'" class="movement-section">
             <div v-if="!movement.length" class="inline-state">Движений пока нет.</div>
             <div v-else class="movement-table-wrap">
+              <div class="movement-toolbar">
+                <button class="btn btn-sm" :disabled="movementExportLoading" @click="exportMovementExcel">
+                  <i class="fas fa-file-excel"></i>
+                  {{ movementExportLoading ? 'Формируем...' : 'Экспорт в Excel' }}
+                </button>
+              </div>
               <table class="movement-table">
                 <thead>
                   <tr>
@@ -1094,6 +1236,12 @@ onBeforeUnmount(revokePhotoUrls)
                           class="document-link"
                           @click="openDelivery(item.deliveryId)"
                         >Доставка</button>
+                        <button
+                          v-if="item.warehouseReceiptId && warehouseId"
+                          type="button"
+                          class="document-link"
+                          @click="openWarehouseReceipt(item)"
+                        >Накладная {{ item.warehouseReceiptNum ? `#${item.warehouseReceiptNum}` : '' }}</button>
                       </div>
                     </td>
                     <td class="mt-col-name">
@@ -1773,6 +1921,17 @@ onBeforeUnmount(revokePhotoUrls)
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.movement-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+
+.movement-toolbar .btn {
+  margin-top: 10px;
+  margin-right: 10px;
 }
 
 /* ── Movement table ────────────────────────────── */

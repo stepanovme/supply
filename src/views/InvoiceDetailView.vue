@@ -6,6 +6,7 @@ import CustomPdfPreview from '../components/pdf/CustomPdfPreview.vue'
 import { useAuthStore } from '../stores/auth'
 import { useChatStore } from '../stores/chat'
 import { mainNavLinks } from '../constants/mainNav'
+import { priorityStyle } from '../utils/priorityColor'
 import ChatPanel from '../components/chat/ChatPanel.vue'
 
 const route = useRoute()
@@ -289,6 +290,7 @@ const normalizePaymentRows = (list) => {
     createdAt: formatDateShort(item?.created_at),
     createdBy: item?.created_by_user?.short_fio || '',
     datePlan: item?.date_plan ? String(item.date_plan).slice(0, 10) : '',
+    priority: item?.priority != null ? Number(item.priority) : 2,
     value: item?.value == null ? '' : Number(item.value),
     percentChoice: '',
     method: String(item?.paid_type || ''),
@@ -303,6 +305,7 @@ const normalizePaymentRows = (list) => {
     createdAt: '',
     createdBy: '',
     datePlan: '',
+    priority: 2,
     value: '',
     percentChoice: '',
     method: '',
@@ -781,6 +784,7 @@ const savePayments = async () => {
       const payload = {
         value: Number(row.value || 0) || 0,
         date_plan: row.datePlan || null,
+        priority: Math.max(0, Math.round(Number(row.priority) || 2)),
         paid: paidValue,
         paid_type: row.method || 'account',
         paid_by: row.isPaid ? String(currentUserId.value || '') : null,
@@ -1711,6 +1715,7 @@ onBeforeUnmount(() => {
               <div class="payment-row-head">
                 <div>Дата создания</div>
                 <div>План дата</div>
+                <div>Приоритет</div>
                 <div>Сумма платежа</div>
                 <div>% от остатка</div>
                 <div>Кто создал платеж</div>
@@ -1725,6 +1730,17 @@ onBeforeUnmount(() => {
                 <div v-for="(row, idx) in paymentRows" :key="row.id || `new-${idx}`" class="payment-row" :class="{ locked: isPaymentLocked(row) }">
                   <input :value="row.createdAt" class="form-input" type="text" readonly>
                   <input v-model="row.datePlan" class="form-input" type="date" :disabled="isPaymentLocked(row)" @input="onPaymentRowInput">
+                  <input
+                    v-model.number="row.priority"
+                    class="form-input priority-input"
+                    type="number"
+                    min="0"
+                    step="1"
+                    placeholder="2"
+                    :style="row.priority != null && !isPaymentLocked(row) ? { borderColor: priorityStyle(row.priority).backgroundColor, color: priorityStyle(row.priority).backgroundColor, fontWeight: '700' } : {}"
+                    :disabled="isPaymentLocked(row)"
+                    @input="() => { if (row.priority < 0 || row.priority === '') row.priority = 0 }"
+                  >
                   <input
                     v-model="row.value"
                     class="form-input"
@@ -2377,7 +2393,7 @@ onBeforeUnmount(() => {
 
 .payment-row-head {
   display: grid;
-  grid-template-columns: 120px 130px 140px 120px 180px 160px 110px 120px 160px 140px 50px;
+  grid-template-columns: 120px 130px 68px 140px 120px 180px 160px 110px 120px 160px 140px 50px;
   gap: 10px;
   font-size: 12px;
   color: var(--text-secondary);
@@ -2393,7 +2409,7 @@ onBeforeUnmount(() => {
 
 .payment-row {
   display: grid;
-  grid-template-columns: 120px 130px 140px 120px 180px 160px 110px 120px 160px 140px 50px;
+  grid-template-columns: 120px 130px 68px 140px 120px 180px 160px 110px 120px 160px 140px 50px;
   gap: 10px;
   align-items: center;
   padding: 6px;
@@ -2419,6 +2435,10 @@ onBeforeUnmount(() => {
   background: #f3f4f6;
   color: #6b7280;
   cursor: not-allowed;
+}
+
+.priority-input {
+  text-align: center;
 }
 
 .paid-check {

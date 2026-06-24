@@ -90,63 +90,73 @@ onBeforeUnmount(() => window.removeEventListener('mousedown', closeFilters))
             <th>Согласование</th>
             <th>Сроки</th>
             <th class="th-vertical">
-              <div class="status-label-vertical">Согласовано</div>
-              <div class="col-filter-trigger" :class="{ active: colFilters.agreed?.length }" @click.stop="toggleColFilter('agreed')">
-                <i class="fas fa-filter"></i>
+              <div class="th-vertical-inner">
+                <div class="col-filter-trigger" :class="{ active: colFilters.agreed?.length }" @click.stop="toggleColFilter('agreed')">
+                  <i class="fas fa-filter"></i>
+                </div>
+                <div class="status-label-vertical">Согласовано</div>
               </div>
               <div v-if="colFilterOpen === 'agreed'" class="col-filter-dropdown" @mousedown.stop @click.stop>
                 <div v-for="opt in columnFilterConfig.agreed.options" :key="opt.value" class="col-filter-option" @click.stop="toggleColFilterOption('agreed', opt.value)">
-                    <input type="checkbox" :checked="colFilters.agreed?.includes(opt.value)" @click.stop>
-                    <span>{{ opt.text }}</span>
-                  </div>
+                  <input type="checkbox" :checked="colFilters.agreed?.includes(opt.value)" @click.stop>
+                  <span>{{ opt.text }}</span>
                 </div>
-              </th>
-              <th class="th-vertical">
-                <div class="status-label-vertical">Ответ</div>
+              </div>
+            </th>
+            <th class="th-vertical">
+              <div class="th-vertical-inner">
                 <div class="col-filter-trigger" :class="{ active: colFilters.answered?.length }" @click.stop="toggleColFilter('answered')">
                   <i class="fas fa-filter"></i>
                 </div>
-                <div v-if="colFilterOpen === 'answered'" class="col-filter-dropdown" @mousedown.stop @click.stop>
-                  <div v-for="opt in columnFilterConfig.answered.options" :key="opt.value" class="col-filter-option" @click.stop="toggleColFilterOption('answered', opt.value)">
-                    <input type="checkbox" :checked="colFilters.answered?.includes(opt.value)" @click.stop>
-                    <span>{{ opt.text }}</span>
-                  </div>
+                <div class="status-label-vertical">Ответ</div>
+              </div>
+              <div v-if="colFilterOpen === 'answered'" class="col-filter-dropdown" @mousedown.stop @click.stop>
+                <div v-for="opt in columnFilterConfig.answered.options" :key="opt.value" class="col-filter-option" @click.stop="toggleColFilterOption('answered', opt.value)">
+                  <input type="checkbox" :checked="colFilters.answered?.includes(opt.value)" @click.stop>
+                  <span>{{ opt.text }}</span>
                 </div>
-              </th>
-              <th class="th-vertical">
-                <div class="status-label-vertical">На складе</div>
+              </div>
+            </th>
+            <th class="th-vertical">
+              <div class="th-vertical-inner">
                 <div class="col-filter-trigger" :class="{ active: colFilters.stock?.length }" @click.stop="toggleColFilter('stock')">
                   <i class="fas fa-filter"></i>
                 </div>
-                <div v-if="colFilterOpen === 'stock'" class="col-filter-dropdown" @mousedown.stop @click.stop>
-                  <div v-for="opt in columnFilterConfig.stock.options" :key="opt.value" class="col-filter-option" @click.stop="toggleColFilterOption('stock', opt.value)">
-                    <input type="checkbox" :checked="colFilters.stock?.includes(opt.value)" @click.stop>
-                    <span>{{ opt.text }}</span>
-                  </div>
+                <div class="status-label-vertical">На складе</div>
+              </div>
+              <div v-if="colFilterOpen === 'stock'" class="col-filter-dropdown" @mousedown.stop @click.stop>
+                <div v-for="opt in columnFilterConfig.stock.options" :key="opt.value" class="col-filter-option" @click.stop="toggleColFilterOption('stock', opt.value)">
+                  <input type="checkbox" :checked="colFilters.stock?.includes(opt.value)" @click.stop>
+                  <span>{{ opt.text }}</span>
                 </div>
-              </th>
-              <th class="th-vertical">
-                <div class="status-label-vertical">Оплачено</div>
+              </div>
+            </th>
+            <th class="th-vertical">
+              <div class="th-vertical-inner">
                 <div class="col-filter-trigger" :class="{ active: colFilters.paid?.length }" @click.stop="toggleColFilter('paid')">
                   <i class="fas fa-filter"></i>
                 </div>
-                <div v-if="colFilterOpen === 'paid'" class="col-filter-dropdown" @mousedown.stop @click.stop>
-                  <div v-for="opt in columnFilterConfig.paid.options" :key="opt.value" class="col-filter-option" @click.stop="toggleColFilterOption('paid', opt.value)">
-                    <input type="checkbox" :checked="colFilters.paid?.includes(opt.value)" @click.stop>
-                    <span>{{ opt.text }}</span>
-                  </div>
+                <div class="status-label-vertical">Оплачено</div>
+              </div>
+              <div v-if="colFilterOpen === 'paid'" class="col-filter-dropdown" @mousedown.stop @click.stop>
+                <div v-for="opt in columnFilterConfig.paid.options" :key="opt.value" class="col-filter-option" @click.stop="toggleColFilterOption('paid', opt.value)">
+                  <input type="checkbox" :checked="colFilters.paid?.includes(opt.value)" @click.stop>
+                  <span>{{ opt.text }}</span>
                 </div>
-              </th>
-              <th class="th-vertical">
-                <div class="status-label-vertical">Доставлено</div>
+              </div>
+            </th>
+            <th class="th-vertical">
+              <div class="th-vertical-inner">
                 <div class="col-filter-trigger" :class="{ active: colFilters.delivered?.length }" @click.stop="toggleColFilter('delivered')">
                   <i class="fas fa-filter"></i>
                 </div>
-                <div v-if="colFilterOpen === 'delivered'" class="col-filter-dropdown" @mousedown.stop @click.stop>
-                  <div v-for="opt in columnFilterConfig.delivered.options" :key="opt.value" class="col-filter-option" @click.stop="toggleColFilterOption('delivered', opt.value)">
-                    <input type="checkbox" :checked="colFilters.delivered?.includes(opt.value)" @click.stop>
-                    <span>{{ opt.text }}</span>
-                  </div>
+                <div class="status-label-vertical">Доставлено</div>
+              </div>
+              <div v-if="colFilterOpen === 'delivered'" class="col-filter-dropdown" @mousedown.stop @click.stop>
+                <div v-for="opt in columnFilterConfig.delivered.options" :key="opt.value" class="col-filter-option" @click.stop="toggleColFilterOption('delivered', opt.value)">
+                  <input type="checkbox" :checked="colFilters.delivered?.includes(opt.value)" @click.stop>
+                  <span>{{ opt.text }}</span>
+                </div>
               </div>
             </th>
             <th>Док-ты</th>
@@ -264,7 +274,7 @@ td {
 
 th {
   text-align: center;
-  padding: 12px 10px;
+  padding: 8px 6px;
   background: var(--bg-subtle);
   color: var(--text-secondary);
   font-weight: 600;
@@ -275,13 +285,22 @@ th {
   position: sticky;
   top: 0;
   z-index: 20;
-  height: 48px;
+  height: 36px;
 }
 
 .th-vertical {
   vertical-align: bottom;
-  text-align: left;
-  padding: 24px 10px 8px;
+  text-align: center;
+  padding: 6px 4px 6px;
+  height: auto;
+}
+
+/* Обёртка: иконка фильтра сверху, текст снизу */
+.th-vertical-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
 }
 
 .status-label-vertical {
@@ -289,7 +308,7 @@ th {
   transform: rotate(180deg);
   font-size: 10px;
   color: var(--text-tertiary);
-  height: 80px;
+  height: 52px;
   margin: 0;
   font-weight: 600;
   white-space: nowrap;
@@ -297,11 +316,6 @@ th {
 }
 
 .col-filter-trigger {
-  position: absolute;
-  top: 5px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 21;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -311,6 +325,7 @@ th {
   line-height: 1;
   padding: 2px;
   transition: color 0.15s;
+  flex-shrink: 0;
 }
 
 .col-filter-trigger:hover,
