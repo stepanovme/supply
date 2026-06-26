@@ -26,6 +26,9 @@ import WarehouseWaybillFormView from '../views/WarehouseWaybillFormView.vue'
 import UpdDocumentDetailView from '../views/UpdDocumentDetailView.vue'
 import DealsView from '../views/DealsView.vue'
 import PaymentsView from '../views/PaymentsView.vue'
+import DocumentsView from '../views/DocumentsView.vue'
+import ContractCreateView from '../views/ContractCreateView.vue'
+import ContractDetailView from '../views/ContractDetailView.vue'
 import DealDetailView from '../views/DealDetailView.vue'
 import DeliveriesView from '../views/DeliveriesView.vue'
 import DeliveryCreateView from '../views/DeliveryCreateView.vue'
@@ -137,6 +140,21 @@ const router = createRouter({
       path: '/payments',
       name: 'payments',
       component: PaymentsView,
+    },
+    {
+      path: '/documents',
+      name: 'documents',
+      component: DocumentsView,
+    },
+    {
+      path: '/documents/contracts/create',
+      name: 'contract-create',
+      component: ContractCreateView,
+    },
+    {
+      path: '/documents/contracts/:id',
+      name: 'contract-detail',
+      component: ContractDetailView,
     },
     {
       path: '/deals/:dealId',
