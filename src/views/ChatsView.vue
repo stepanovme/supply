@@ -56,9 +56,27 @@ const chatTypes = computed(() => {
 })
 
 const chatTypeLabel = (type) => {
-  const labels = { invoice: 'Счёт', personal: 'Личный', delivery: 'Доставка', deal: 'Сделка', request: 'Заявка', specification: 'Спецификация' }
+  const labels = { invoice: 'Счёт', personal: 'Личный', delivery: 'Доставка', deal: 'Сделка', request: 'Заявка', specification: 'Спецификация', task: 'Задача' }
   return labels[type] || type
 }
+
+const entityLink = computed(() => {
+  const c = selectedChat.value
+  if (!c) return null
+  const type = c.type
+  const id = c[`${type}_id`]
+  if (!id) return null
+  const routeMap = {
+    task: { name: 'tasks', query: { task: id } },
+    invoice: { name: 'invoice-detail', params: { invoiceId: id } },
+    deal: { name: 'deal-detail', params: { dealId: id } },
+    request: { name: 'request-detail', params: { requestId: id } },
+    delivery: { name: 'delivery-detail', params: { deliveryId: id } },
+  }
+  const route = routeMap[type]
+  if (!route) return null
+  return { label: chatTypeLabel(type), route }
+})
 
 const filteredChatList = computed(() => {
   let list = chat.chatList
@@ -535,7 +553,13 @@ onUnmounted(() => {
           <div class="chat-header">
             <div class="chat-header-info">
               <span class="chat-header-title">{{ selectedChat.title }}</span>
-              <span class="chat-header-project">{{ selectedChat.project_name }}</span>
+              <div class="chat-header-meta">
+                <span v-if="selectedChat.project_name" class="chat-header-project">{{ selectedChat.project_name }}</span>
+                <router-link v-if="entityLink" :to="entityLink.route" class="chat-entity-link">
+                  <i class="fas" :class="typeIcon(selectedChat.type)"></i>
+                  {{ entityLink.label }}
+                </router-link>
+              </div>
             </div>
             <button class="chat-members-toggle" type="button" @click="showMembers = !showMembers">
               <i class="fas fa-users"></i>
@@ -1027,9 +1051,34 @@ onUnmounted(() => {
   color: var(--text-primary, #1e293b);
 }
 
+.chat-header-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .chat-header-project {
   font-size: 11px;
   color: var(--text-secondary, #64748b);
+}
+
+.chat-entity-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--brand-primary, #3b82f6);
+  text-decoration: none;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--brand-light, #eff6ff);
+  transition: background 0.15s;
+}
+
+.chat-entity-link:hover {
+  background: #dbeafe;
+  text-decoration: none;
 }
 
 .chat-members-toggle {

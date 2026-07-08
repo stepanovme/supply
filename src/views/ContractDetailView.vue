@@ -1,7 +1,9 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import TopNav from '../components/layout/TopNav.vue'
+import TasksSection from '../components/TasksSection.vue'
+import DocumentLinksPanel from '../components/DocumentLinksPanel.vue'
 import { mainNavLinks } from '../constants/mainNav'
 import { renderAsync } from 'docx-preview'
 import * as XLSX from 'xlsx'
@@ -19,6 +21,7 @@ const tabs = [
   { key: 'main',    label: 'Основная информация' },
   { key: 'viewer',  label: 'Просмотр договора' },
   { key: 'docs',    label: 'Документы' },
+  { key: 'tasks',   label: 'Задачи' },
   { key: 'history', label: 'История действий' },
 ]
 
@@ -47,7 +50,7 @@ const formatMoney = (v) => {
   return new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v) + ' ₽'
 }
 
-const typeLabel = (t) => ({ buyer: 'Покупатель', provide: 'Поставщик', seller: 'Продавец', service: 'Услуги' }[t] || t)
+const typeLabel = (t) => ({ buyer: 'Покупатель', provider: 'Поставщик', provide: 'Поставщик', seller: 'Продавец', service: 'Услуги' }[t] || t)
 
 const executor    = computed(() => contract.value?.user_roles?.find(r => r.role === 'executor'))
 const coExecutors = computed(() => contract.value?.user_roles?.filter(r => r.role === 'co-executor') || [])
@@ -57,6 +60,181 @@ const extraParties = computed(() => contract.value?.parties || [])
 const logs        = ref([])
 const logsLoading = ref(false)
 const logsError   = ref('')
+
+const logIcon = (text) => {
+  const t = (text || '').toLowerCase()
+  // Корни покрывают все падежи/числа/роды
+  const has = (stem) => t.includes(stem)
+  // Субъекты
+  const isFolder   = has('папк')                                          // папка/папки/папку/папке/папкой
+  const isFile     = has('файл')                                          // файл/файла/файлу/файле/файлы
+  const isContract = has('договор')                                       // договор/договора/договору/договоре
+  const isParty    = has('сторон') || has('контрагент')                   // сторона/стороны/стороне/стороны
+  const isObject   = has('объект')                                        // объект/объекта/объекту
+  const isWorkType = has('вид') && (has('работ') || has('работы'))        // видов работ / виды работ
+  const isSum      = has('сумм') || has('финанс')                         // сумма/суммы/сумму
+  const isUser     = has('пользовател') || has('исполнит') || has('ответствен') || has('наблюдател')
+  const isStatus   = has('статус')
+  // Действия — используем корни чтобы покрыть все формы спряжения и вид
+  const isEdit   = /измен|обновл|редактир/.test(t)    // изменил/изменила/изменён/изменена/обновил/обновлён
+  const isDelete = /удал/.test(t)                      // удалил/удалила/удалён/удалена/удалено
+  const isCreate = /создал|создан|добавил|добавлен|загруз/.test(t)  // загружен/загружена/добавлен
+
+  if (isFolder)   return { icon: 'fa-folder',          color: '#f59e0b' }
+  if (isFile)     return { icon: 'fa-file-alt',         color: '#6366f1' }
+  if (isContract) {
+    if (isDelete) return { icon: 'fa-trash-alt',        color: '#ef4444' }
+    if (isCreate) return { icon: 'fa-file-contract',    color: '#10b981' }
+    if (isEdit)   return { icon: 'fa-pencil-alt',       color: '#3b82f6' }
+                  return { icon: 'fa-file-contract',    color: '#8b5cf6' }
+  }
+  if (isParty)    return { icon: 'fa-handshake',        color: '#8b5cf6' }
+  if (isObject)   return { icon: 'fa-map-marker-alt',   color: '#f97316' }
+  if (isWorkType) return { icon: 'fa-tools',            color: '#14b8a6' }
+  if (isSum)      return { icon: 'fa-ruble-sign',       color: '#10b981' }
+  if (isUser)     return { icon: 'fa-user',             color: '#06b6d4' }
+  if (isStatus)   return { icon: 'fa-flag',             color: '#f59e0b' }
+  if (isDelete)   return { icon: 'fa-trash-alt',        color: '#ef4444' }
+  if (isCreate)   return { icon: 'fa-plus-circle',      color: '#10b981' }
+  if (isEdit)     return { icon: 'fa-pencil-alt',       color: '#3b82f6' }
+                  return { icon: 'fa-history',           color: '#94a3b8' }
+}
+
+// ── Log type detection (for filter badges) ──
+const LOG_TYPES = [
+  { key: 'contract', label: 'Договор',   icon: 'fa-file-contract', color: '#8b5cf6' },
+  { key: 'file',     label: 'Файл',      icon: 'fa-file-alt',      color: '#6366f1' },
+  { key: 'folder',   label: 'Папка',     icon: 'fa-folder',        color: '#f59e0b' },
+  { key: 'party',    label: 'Стороны',   icon: 'fa-handshake',     color: '#8b5cf6' },
+  { key: 'object',   label: 'Объект',    icon: 'fa-map-marker-alt',color: '#f97316' },
+  { key: 'worktype', label: 'Вид работ', icon: 'fa-tools',         color: '#14b8a6' },
+  { key: 'user',     label: 'Сотрудник', icon: 'fa-user',          color: '#06b6d4' },
+]
+
+const ALL_STATUS_KEYS = ['information', 'signed', 'original', 'verified']
+const allStatusesActive = computed(() => ALL_STATUS_KEYS.every(k => filterStatuses.value.includes(k)))
+const toggleAllStatuses = () => {
+  if (allStatusesActive.value) filterStatuses.value = []
+  else filterStatuses.value = [...ALL_STATUS_KEYS]
+}
+
+const LOG_STATUSES = [
+  { key: 'information', label: 'Заполнен',  icon: 'fa-info-circle',   color: '#3b82f6' },
+  { key: 'signed',      label: 'Подписан',  icon: 'fa-pen-nib',       color: '#8b5cf6' },
+  { key: 'original',    label: 'Оригинал',  icon: 'fa-stamp',         color: '#f59e0b' },
+  { key: 'verified',    label: 'Сверен',    icon: 'fa-check-double',  color: '#10b981' },
+]
+
+const logType = (text) => {
+  const t = (text || '').toLowerCase()
+  if (t.includes('папк'))  return 'folder'
+  if (t.includes('файл'))  return 'file'
+  if (t.includes('договор')) return 'contract'
+  if (t.includes('сторон') || t.includes('контрагент')) return 'party'
+  if (t.includes('объект')) return 'object'
+  if (t.includes('вид') && t.includes('работ')) return 'worktype'
+  if (t.includes('пользовател') || t.includes('исполнит') || t.includes('ответствен') || t.includes('наблюдател')) return 'user'
+  return 'other'
+}
+
+const logUniqueUsers = computed(() => {
+  const map = new Map()
+  for (const log of logs.value) {
+    const u = log.created_by_user
+    if (u?.id && !map.has(u.id)) map.set(u.id, u)
+  }
+  return [...map.values()]
+})
+
+// Filters state
+const filterText     = ref('')
+const filterUser     = ref('')      // user id string
+const filterUserQ    = ref('')      // search query
+const filterUserOpen = ref(false)
+const filterDateFrom = ref('')
+const filterDateTo   = ref('')
+const filterTypes    = ref([])
+const filterStatuses = ref([])
+
+const filteredLogUsers = computed(() => {
+  const q = filterUserQ.value.toLowerCase()
+  return logUniqueUsers.value.filter(u => {
+    if (!q) return true
+    const name = u.short_fio || `${u.surname} ${u.name}`
+    return name.toLowerCase().includes(q)
+  })
+})
+
+const selectLogUser = (u) => {
+  filterUser.value  = u ? String(u.id) : ''
+  filterUserQ.value = u ? (u.short_fio || `${u.surname} ${u.name}`) : ''
+  filterUserOpen.value = false
+}
+
+const clearLogUser = () => { filterUser.value = ''; filterUserQ.value = ''; filterUserOpen.value = false }
+
+const filtersActive = computed(() =>
+  filterText.value.trim() || filterUser.value || filterDateFrom.value || filterDateTo.value || filterTypes.value.length || filterStatuses.value.length
+)
+
+const toggleFilterType = (key) => {
+  const idx = filterTypes.value.indexOf(key)
+  if (idx === -1) filterTypes.value.push(key)
+  else filterTypes.value.splice(idx, 1)
+}
+
+const toggleFilterStatus = (key) => {
+  const idx = filterStatuses.value.indexOf(key)
+  if (idx === -1) filterStatuses.value.push(key)
+  else filterStatuses.value.splice(idx, 1)
+}
+
+const clearFilters = () => {
+  filterText.value = ''; filterUser.value = ''; filterUserQ.value = ''
+  filterDateFrom.value = ''; filterDateTo.value = ''
+  filterTypes.value = []; filterStatuses.value = []
+}
+
+const logsFiltered = computed(() => {
+  let list = logs.value
+  const q = filterText.value.trim().toLowerCase()
+  if (q) list = list.filter(l => (l.full_log || l.message || '').toLowerCase().includes(q))
+  if (filterUser.value) list = list.filter(l => String(l.created_by_user?.id) === filterUser.value)
+  if (filterDateFrom.value) list = list.filter(l => l.created_at >= filterDateFrom.value)
+  if (filterDateTo.value)   list = list.filter(l => l.created_at.slice(0,10) <= filterDateTo.value)
+  if (filterTypes.value.length) list = list.filter(l => filterTypes.value.includes(logType(l.full_log || l.message)))
+  if (filterStatuses.value.length) list = list.filter(l => {
+    const t = (l.full_log || l.message || '').toLowerCase()
+    const statusMap = { information: ['information', 'заполнен'], signed: ['signed', 'подписан'], original: ['original', 'оригинал'], verified: ['verified', 'сверен'] }
+    return filterStatuses.value.some(s => statusMap[s]?.some(w => t.includes(w)))
+  })
+  return list
+})
+
+const isSameDay = (a, b) => {
+  const da = new Date(a), db = new Date(b)
+  return da.getFullYear() === db.getFullYear() && da.getMonth() === db.getMonth() && da.getDate() === db.getDate()
+}
+
+const formatDateGroup = (iso) => {
+  const d = new Date(iso)
+  const today = new Date()
+  const yesterday = new Date(); yesterday.setDate(today.getDate() - 1)
+  if (isSameDay(d, today)) return 'Сегодня'
+  if (isSameDay(d, yesterday)) return 'Вчера'
+  return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
+}
+
+const logsGrouped = computed(() => {
+  const groups = []
+  let lastDay = null
+  for (const log of logsFiltered.value) {
+    const day = formatDateGroup(log.created_at)
+    if (day !== lastDay) { groups.push({ type: 'day', label: day }); lastDay = day }
+    groups.push({ type: 'log', log })
+  }
+  return groups
+})
 
 // ── Documents ──────────────────────────────────────────────
 const UPLOAD_TYPES = [
@@ -84,6 +262,8 @@ const findRootFolderInTree = (name) => {
 
 const getOrCreateFolder = async (folderName) => {
   const contractId = route.params.id
+  // Ensure tree is loaded before searching (user may be on a different tab)
+  if (!tree.value.length) await loadTree()
   const existing = findRootFolderInTree(folderName)
   if (existing) return existing.id
   const createRes = await fetch('/apisup/supply/contract-folders', {
@@ -126,6 +306,11 @@ const uploadFiles = async (key, files) => {
     uploadState.value[key] = { loading: false, error: '', done: true }
     setTimeout(() => { uploadState.value[key] = { loading: false, error: '', done: false } }, 3000)
     await loadTree()
+    // Auto-assign statuses when uploading original
+    if (key === 'original') {
+      if (!hasStatus('signed'))   await addStatus('signed')
+      if (!hasStatus('original')) await addStatus('original')
+    }
   } catch (e) {
     uploadState.value[key] = { loading: false, error: e.message || 'Ошибка загрузки', done: false }
   }
@@ -311,6 +496,7 @@ const submitDelete = async () => {
     deleteModal.value.show = false
     if (m.type === 'folder' && currentFolder.value?.id === m.id) goToRoot()
     await loadTree()
+    await checkOriginalFolderEmpty()
   } finally {
     m.loading = false
   }
@@ -415,16 +601,15 @@ const loadViewerFiles = async () => {
   }
 }
 
-const selectViewerFile = async (file) => {
+const selectViewerFile = async (file, source = 'contract') => {
   if (viewerBlobUrl.value) { URL.revokeObjectURL(viewerBlobUrl.value); viewerBlobUrl.value = null }
   viewerActiveFile.value = file
   viewerPreviewLoad.value = true
   try {
     const ext = file.extension?.toLowerCase()
     const usePreview = ['docx', 'doc', 'xlsx', 'xls'].includes(ext)
-    const url = usePreview
-      ? `/apisup/supply/contract-files/${file.id}/preview`
-      : `/apisup/supply/contract-files/${file.id}/download`
+    const base = source === 'letter' ? '/apisup/supply/letter-files' : '/apisup/supply/contract-files'
+    const url = `${base}/${file.id}/${usePreview ? 'preview' : 'download'}`
     const res = await fetch(url, { credentials: 'include' })
     if (!res.ok) throw new Error()
     const blob = await res.blob()
@@ -450,11 +635,117 @@ const setTab = (key) => {
   if (key === 'viewer') loadViewerFiles()
 }
 
+
 // ── Edit mode ──────────────────────────────────────────────
 const editMode    = ref(false)
 const editSaving  = ref(false)
 const editError   = ref('')
 const currentUserId = ref(null)
+
+// Наблюдатели могут только смотреть; executor, co-executor и создатель договора могут редактировать
+const canEdit = computed(() => {
+  if (!currentUserId.value || !contract.value) return false
+  // Создатель договора всегда может редактировать
+  if (contract.value.created_by === currentUserId.value) return true
+  const roles = contract.value.user_roles || []
+  const myRole = roles.find(r => (r.user?.id || r.user_id) === currentUserId.value)
+  // Не найден в ролях — не ограничиваем (например, администратор)
+  if (!myRole) return true
+  return myRole.role === 'executor' || myRole.role === 'co-executor'
+})
+
+// ── Confirm modal (generic) ──────────────────────────────────
+const confirmModal = ref({ show: false, text: '', onConfirm: null, loading: false, danger: false })
+const showConfirm = (text, onConfirm, danger = false) => {
+  confirmModal.value = { show: true, text, onConfirm, loading: false, danger }
+}
+const doConfirm = async () => {
+  confirmModal.value.loading = true
+  try { await confirmModal.value.onConfirm() } finally {
+    confirmModal.value = { show: false, text: '', onConfirm: null, loading: false, danger: false }
+  }
+}
+
+// ── Contract statuses ────────────────────────────────────────
+const hasStatus = (key) => (contract.value?.statuses || []).some(s => s.status === key)
+const getStatus = (key) => (contract.value?.statuses || []).find(s => s.status === key)
+
+const statusLoading = ref('')
+
+const addStatus = async (status) => {
+  statusLoading.value = status
+  try {
+    const r = await fetch('/apisup/supply/contract-statuses', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contract_id: Number(route.params.id), status }),
+    })
+    if (!r.ok) throw new Error()
+    await loadContract()
+  } catch { /* silent */ }
+  statusLoading.value = ''
+}
+
+const removeStatus = async (status) => {
+  const s = getStatus(status)
+  if (!s) return
+  statusLoading.value = status
+  try {
+    await fetch(`/apisup/supply/contract-statuses/${s.id}`, { method: 'DELETE', credentials: 'include' })
+    await loadContract()
+  } catch { /* silent */ }
+  statusLoading.value = ''
+}
+
+// Upload original — also auto-assigns signed + original statuses
+const originalFileInput = ref(null)
+const originalUploading = ref(false)
+
+const uploadOriginal = async (files) => {
+  if (!files?.length) return
+  originalUploading.value = true
+  try {
+    const folderId = await getOrCreateFolder('Оригинал договора')
+    await sendFilesToApi([...files], folderId, 'original')
+    await loadTree()
+    // auto-assign signed and original if missing
+    if (!hasStatus('signed'))   await addStatus('signed')
+    if (!hasStatus('original')) await addStatus('original')
+  } catch { /* silent */ }
+  originalUploading.value = false
+  if (originalFileInput.value) originalFileInput.value.value = ''
+}
+
+// After deleting a file — check if original folder is now empty → remove original (+ verified)
+const checkOriginalFolderEmpty = async () => {
+  const origFolder = tree.value.find(f => f.name === 'Оригинал договора' && !f.parent_id)
+  const isEmpty = !origFolder || (!(origFolder.files?.length) && !(origFolder.children?.length))
+  if (isEmpty && hasStatus('original')) {
+    await removeStatus('original')
+    if (hasStatus('verified')) await removeStatus('verified')
+  }
+}
+
+// ── Delete modal ── override submitDelete to check original folder after deletion
+// (patched below after the original submitDelete)
+
+// ── Delete contract ──────────────────────────────────────────
+const deleteContractModal = ref(false)
+const deleteContractLoading = ref(false)
+const deleteContractError   = ref('')
+
+const confirmDeleteContract = async () => {
+  deleteContractLoading.value = true
+  deleteContractError.value   = ''
+  try {
+    const r = await fetch(`/apisup/supply/contracts/${route.params.id}`, { method: 'DELETE', credentials: 'include' })
+    if (!r.ok) throw new Error('Ошибка удаления')
+    router.push('/documents')
+  } catch (e) {
+    deleteContractError.value = e.message || 'Не удалось удалить'
+    deleteContractLoading.value = false
+  }
+}
 
 const editCounterparties = ref([])
 const editDocTypes       = ref([])
@@ -703,6 +994,8 @@ const selectCP = (target, cp) => {
 }
 
 const closeAllDropdowns = (e) => {
+  if (e.target.closest('.log-filter-user-wrap')) return
+  filterUserOpen.value = false
   if (!editMode.value) return
   if (e.target.closest('.ac-wrap')) return
   acCust.value.open    = false
@@ -717,7 +1010,25 @@ const closeAllDropdowns = (e) => {
 
 onMounted(() => {
   loadContract()
+  fetch('/api/as/users/me', { credentials: 'include' })
+    .then(r => r.ok ? r.json() : null)
+    .then(me => { if (me?.id) currentUserId.value = me.id })
   document.addEventListener('mousedown', closeAllDropdowns)
+})
+
+// Переход договор → договор (через связи): компонент переиспользуется,
+// поэтому при смене id перезагружаем все данные
+watch(() => route.params.id, (newId, oldId) => {
+  if (!newId || newId === oldId) return
+  // сброс состояния вкладок
+  activeTab.value = 'main'
+  editMode.value = false
+  tree.value = []
+  logs.value = []
+  viewerFiles.value = []
+  viewerActiveFile.value = null
+  if (viewerBlobUrl.value) { URL.revokeObjectURL(viewerBlobUrl.value); viewerBlobUrl.value = null }
+  loadContract()
 })
 onUnmounted(() => {
   document.removeEventListener('mousedown', closeAllDropdowns)
@@ -747,9 +1058,14 @@ onUnmounted(() => {
         </div>
         <div class="header-title-row">
           <h1 class="contract-title">{{ contract.full_name || contract.name || '—' }}</h1>
-          <button v-if="activeTab === 'main' && !editMode" class="edit-contract-btn" @click="enterEditMode">
-            <i class="fas fa-pencil-alt"></i> Редактировать
-          </button>
+          <div class="header-actions-row">
+            <button v-if="activeTab === 'main' && !editMode && canEdit" class="edit-contract-btn" @click="enterEditMode">
+              <i class="fas fa-pencil-alt"></i> Редактировать
+            </button>
+            <button v-if="activeTab === 'main' && !editMode && canEdit" class="delete-contract-btn" @click="showConfirm('Вы уверены, что хотите удалить договор? Это действие необратимо — все данные, файлы и история будут удалены.', confirmDeleteContract, true)">
+              <i class="fas fa-trash-alt"></i> Удалить
+            </button>
+          </div>
         </div>
         <div v-if="contract.document_type_name" class="contract-type-label">
           <i class="fas fa-tag"></i> {{ contract.document_type_name }}
@@ -763,6 +1079,55 @@ onUnmounted(() => {
           class="tab-btn" :class="{ active: activeTab === tab.key }"
           @click="setTab(tab.key)"
         >{{ tab.label }}</button>
+      </div>
+
+      <!-- ── Status actions bar ── -->
+      <div v-if="!editMode && canEdit" class="status-actions-bar">
+        <!-- Договор подписан / Отменить подписание -->
+        <button v-if="!hasStatus('signed')"
+          class="status-action-btn status-action-btn--sign"
+          :disabled="statusLoading === 'signed'"
+          @click="showConfirm('Вы уверены, что хотите подписать договор?', () => addStatus('signed'))">
+          <div v-if="statusLoading === 'signed'" class="mini-spinner"></div>
+          <template v-else><i class="fas fa-pen-nib"></i> Договор подписан</template>
+        </button>
+        <button v-else
+          class="status-action-btn status-action-btn--undo"
+          :disabled="statusLoading === 'signed'"
+          @click="showConfirm('Вы уверены, что хотите отменить статус «Договор подписан»?', () => removeStatus('signed'), true)">
+          <div v-if="statusLoading === 'signed'" class="mini-spinner"></div>
+          <template v-else><i class="fas fa-times"></i> Отменить подписание</template>
+        </button>
+
+        <!-- Прикрепить оригинал — только если подписан, но нет оригинала -->
+        <template v-if="hasStatus('signed') && !hasStatus('original')">
+          <input ref="originalFileInput" type="file" multiple style="display:none"
+            @change="uploadOriginal($event.target.files)" />
+          <button class="status-action-btn status-action-btn--original"
+            :disabled="originalUploading"
+            @click="originalFileInput.click()">
+            <div v-if="originalUploading" class="mini-spinner"></div>
+            <template v-else><i class="fas fa-stamp"></i> Прикрепить оригинал</template>
+          </button>
+        </template>
+
+        <!-- Договор сверен / Отменить сверку — только если есть оригинал -->
+        <template v-if="hasStatus('original')">
+          <button v-if="!hasStatus('verified')"
+            class="status-action-btn status-action-btn--verify"
+            :disabled="statusLoading === 'verified'"
+            @click="showConfirm('Вы уверены, что договор сверен?', () => addStatus('verified'))">
+            <div v-if="statusLoading === 'verified'" class="mini-spinner"></div>
+            <template v-else><i class="fas fa-check-double"></i> Договор сверен</template>
+          </button>
+          <button v-else
+            class="status-action-btn status-action-btn--undo"
+            :disabled="statusLoading === 'verified'"
+            @click="showConfirm('Вы уверены, что хотите отменить статус «Договор сверен»?', () => removeStatus('verified'), true)">
+            <div v-if="statusLoading === 'verified'" class="mini-spinner"></div>
+            <template v-else><i class="fas fa-times"></i> Отменить сверку</template>
+          </button>
+        </template>
       </div>
 
       <!-- ── Edit save bar ── -->
@@ -1001,8 +1366,9 @@ onUnmounted(() => {
             <div class="edit-field-group">
               <div class="edit-field-label">Тип</div>
               <select class="edit-select" v-model="editForm.type">
+                <option value="">— не указан —</option>
                 <option value="buyer">Покупатель</option>
-                <option value="provide">Поставщик</option>
+                <option value="provider">Поставщик</option>
               </select>
             </div>
           </div>
@@ -1318,12 +1684,14 @@ onUnmounted(() => {
                   {{ (folder.children?.length || 0) + (folder.files?.length || 0) }} элем.
                 </div>
                 <div class="browser-row-actions">
-                  <button class="file-action-btn" title="Переименовать" @click.stop="openRenameFolder(folder)">
-                    <i class="fas fa-pencil-alt"></i>
-                  </button>
-                  <button class="file-action-btn file-action-btn--danger" title="Удалить" @click.stop="openDeleteFolder(folder)">
-                    <i class="fas fa-trash"></i>
-                  </button>
+                  <template v-if="canEdit">
+                    <button class="file-action-btn" title="Переименовать" @click.stop="openRenameFolder(folder)">
+                      <i class="fas fa-pencil-alt"></i>
+                    </button>
+                    <button class="file-action-btn file-action-btn--danger" title="Удалить" @click.stop="openDeleteFolder(folder)">
+                      <i class="fas fa-trash"></i>
+                    </button>
+                  </template>
                 </div>
                 <i class="fas fa-chevron-right browser-row-arrow"></i>
               </div>
@@ -1340,12 +1708,14 @@ onUnmounted(() => {
                   <button class="file-action-btn" title="Скачать" @click.stop="downloadFile(file)">
                     <i class="fas fa-download"></i>
                   </button>
-                  <button class="file-action-btn" title="Переименовать" @click.stop="openRenameFile(file)">
-                    <i class="fas fa-pencil-alt"></i>
-                  </button>
-                  <button class="file-action-btn file-action-btn--danger" title="Удалить" @click.stop="openDeleteFile(file)">
-                    <i class="fas fa-trash"></i>
-                  </button>
+                  <template v-if="canEdit">
+                    <button class="file-action-btn" title="Переименовать" @click.stop="openRenameFile(file)">
+                      <i class="fas fa-pencil-alt"></i>
+                    </button>
+                    <button class="file-action-btn file-action-btn--danger" title="Удалить" @click.stop="openDeleteFile(file)">
+                      <i class="fas fa-trash"></i>
+                    </button>
+                  </template>
                 </div>
               </div>
 
@@ -1359,45 +1729,6 @@ onUnmounted(() => {
 
             <div v-if="dropUploading" class="drop-uploading">
               <div class="mini-spinner"></div> Загрузка файлов...
-            </div>
-          </div>
-        </div>
-
-        <!-- Modal: Rename -->
-        <div v-if="renameModal.show" class="modal-backdrop" @click.self="renameModal.show = false">
-          <div class="modal-box">
-            <div class="modal-title">
-              {{ renameModal.type === 'file' ? 'Переименовать файл' : 'Переименовать папку' }}
-            </div>
-            <input class="modal-input" v-model="renameModal.name"
-              @keyup.enter="submitRename" @keyup.esc="renameModal.show = false" autofocus />
-            <div class="modal-actions">
-              <button class="modal-btn modal-btn--cancel" @click="renameModal.show = false">Отмена</button>
-              <button class="modal-btn modal-btn--ok" :disabled="renameModal.loading" @click="submitRename">
-                <div v-if="renameModal.loading" class="mini-spinner"></div>
-                <span v-else>Сохранить</span>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <!-- Modal: Delete -->
-        <div v-if="deleteModal.show" class="modal-backdrop" @click.self="deleteModal.show = false">
-          <div class="modal-box">
-            <div class="modal-title modal-title--danger">
-              {{ deleteModal.type === 'file' ? 'Удалить файл?' : 'Удалить папку?' }}
-            </div>
-            <div class="modal-body">
-              Вы уверены, что хотите удалить
-              <strong>«{{ deleteModal.name }}»</strong>?
-              <span v-if="deleteModal.type === 'folder'"> Все вложенные файлы будут удалены.</span>
-            </div>
-            <div class="modal-actions">
-              <button class="modal-btn modal-btn--cancel" @click="deleteModal.show = false">Отмена</button>
-              <button class="modal-btn modal-btn--danger" :disabled="deleteModal.loading" @click="submitDelete">
-                <div v-if="deleteModal.loading" class="mini-spinner"></div>
-                <span v-else>Удалить</span>
-              </button>
             </div>
           </div>
         </div>
@@ -1450,25 +1781,6 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- Modal: Create folder -->
-        <div v-if="createFolderModal.show" class="modal-backdrop" @click.self="createFolderModal.show = false">
-          <div class="modal-box">
-            <div class="modal-title">Создать папку</div>
-            <div v-if="currentFolder" class="modal-hint">
-              Внутри «{{ currentFolder.name }}»
-            </div>
-            <input class="modal-input" v-model="createFolderModal.name" placeholder="Название папки"
-              @keyup.enter="submitCreateFolder" @keyup.esc="createFolderModal.show = false" autofocus />
-            <div class="modal-actions">
-              <button class="modal-btn modal-btn--cancel" @click="createFolderModal.show = false">Отмена</button>
-              <button class="modal-btn modal-btn--ok" :disabled="createFolderModal.loading || !createFolderModal.name.trim()"
-                @click="submitCreateFolder">
-                <div v-if="createFolderModal.loading" class="mini-spinner"></div>
-                <span v-else>Создать</span>
-              </button>
-            </div>
-          </div>
-        </div>
       </div>
 
       <!-- ── Tab: Просмотр договора ── -->
@@ -1645,39 +1957,228 @@ onUnmounted(() => {
           </div>
 
           <!-- Links -->
-          <div v-else-if="viewerRightTab === 'links'" class="viewer-file-empty">
-            <i class="fas fa-link" style="font-size:32px;color:#e2e8f0;margin-bottom:10px"></i>
-            <div>Связи не настроены</div>
-          </div>
+          <DocumentLinksPanel
+            v-else-if="viewerRightTab === 'links'"
+            :owner-id="route.params.id"
+            owner-type="contract"
+            :file-icon="fileIcon"
+            :file-color="fileColor"
+            @open-file="selectViewerFile"
+          />
         </div>
+      </div>
+
+      <!-- ── Tab: Задачи ── -->
+      <div v-else-if="activeTab === 'tasks'" class="tasks-wrap">
+        <TasksSection v-if="contract" :connection-id="route.params.id" connection-type="contract" />
       </div>
 
       <!-- ── Tab: История ── -->
       <div v-else-if="activeTab === 'history'" class="history-wrap">
         <div v-if="logsLoading" class="state-full"><div class="spinner"></div> Загрузка...</div>
         <div v-else-if="logsError" class="state-full state-error"><i class="fas fa-exclamation-circle"></i> {{ logsError }}</div>
-        <div v-else-if="!logs.length" class="tab-empty">
-          <i class="fas fa-history tab-empty-icon"></i>
-          <p class="tab-empty-title">История пуста</p>
-          <p class="tab-empty-sub">Действия по договору появятся здесь</p>
-        </div>
-        <div v-else class="log-list">
-          <div v-for="log in logs" :key="log.id" class="log-item">
-            <div class="log-avatar">
-              {{ log.created_by_user?.name?.[0] }}{{ log.created_by_user?.surname?.[0] }}
+        <template v-else>
+          <!-- Filter panel -->
+          <div class="log-filters">
+            <!-- Search -->
+            <div class="log-filter-search">
+              <i class="fas fa-search log-filter-search-icon"></i>
+              <input class="log-filter-input" v-model="filterText" placeholder="Поиск по тексту..." />
+              <button v-if="filterText" class="log-filter-clear-x" @click="filterText=''">
+                <i class="fas fa-times"></i>
+              </button>
             </div>
-            <div class="log-body">
-              <div class="log-message">{{ log.full_log || log.message }}</div>
-              <div class="log-meta">
-                <span class="log-author">{{ log.created_by_user?.short_fio }}</span>
-                <span class="log-sep">·</span>
-                <span class="log-time">{{ formatDateTime(log.created_at) }}</span>
+            <!-- User autocomplete -->
+            <div class="log-filter-user-wrap">
+              <div class="log-filter-user-input-row" :class="{ focused: filterUserOpen }">
+                <i class="fas fa-user log-filter-user-icon"></i>
+                <input
+                  class="log-filter-user-input"
+                  v-model="filterUserQ"
+                  placeholder="Пользователь..."
+                  @focus="filterUserOpen = true"
+                  @blur="setTimeout(() => filterUserOpen = false, 160)"
+                  @input="filterUser = ''"
+                />
+                <button v-if="filterUser || filterUserQ" class="log-filter-clear-x" @mousedown.prevent="clearLogUser">
+                  <i class="fas fa-times"></i>
+                </button>
+              </div>
+              <div v-if="filterUserOpen" class="log-filter-user-drop">
+                <div class="ac-item" @mousedown.prevent="selectLogUser(null)">
+                  <span style="color:var(--text-tertiary)">Все пользователи</span>
+                </div>
+                <div v-for="u in filteredLogUsers" :key="u.id"
+                  class="ac-item"
+                  :class="{ 'ac-item--sel': filterUser === String(u.id) }"
+                  @mousedown.prevent="selectLogUser(u)">
+                  <div class="log-user-avatar" style="width:22px;height:22px;font-size:9px;flex-shrink:0">
+                    {{ u.name?.[0] }}{{ u.surname?.[0] }}
+                  </div>
+                  {{ u.short_fio || `${u.surname} ${u.name}` }}
+                </div>
+                <div v-if="!filteredLogUsers.length" class="ac-empty">Не найдено</div>
               </div>
             </div>
+            <!-- Date from -->
+            <input type="date" class="log-filter-date" v-model="filterDateFrom" :max="filterDateTo || undefined" title="Дата с" />
+            <span class="log-filter-date-sep">—</span>
+            <input type="date" class="log-filter-date" v-model="filterDateTo" :min="filterDateFrom || undefined" title="Дата по" />
+            <!-- Clear -->
+            <button v-if="filtersActive" class="log-filter-reset" @click="clearFilters">
+              <i class="fas fa-times"></i> Сбросить
+            </button>
           </div>
-        </div>
+
+          <!-- Type chips -->
+          <div class="log-type-chips">
+            <button v-for="lt in LOG_TYPES" :key="lt.key"
+              class="log-type-chip"
+              :class="{ active: filterTypes.includes(lt.key) }"
+              :style="filterTypes.includes(lt.key) ? { background: lt.color + '18', borderColor: lt.color, color: lt.color } : {}"
+              @click="toggleFilterType(lt.key)">
+              <i class="fas" :class="lt.icon"></i>
+              {{ lt.label }}
+            </button>
+            <button class="log-type-chip"
+              :class="{ active: allStatusesActive }"
+              :style="allStatusesActive ? { background: '#10b981' + '18', borderColor: '#10b981', color: '#10b981' } : {}"
+              @click="toggleAllStatuses">
+              <i class="fas fa-flag"></i>
+              Статусы
+            </button>
+          </div>
+
+          <!-- Status chips -->
+          <div class="log-type-chips" style="margin-top:6px">
+            <button v-for="ls in LOG_STATUSES" :key="ls.key"
+              class="log-type-chip"
+              :class="{ active: filterStatuses.includes(ls.key) }"
+              :style="filterStatuses.includes(ls.key) ? { background: ls.color + '18', borderColor: ls.color, color: ls.color } : {}"
+              @click="toggleFilterStatus(ls.key)">
+              <i class="fas" :class="ls.icon"></i>
+              {{ ls.label }}
+            </button>
+          </div>
+
+          <!-- Empty state -->
+          <div v-if="!logs.length" class="tab-empty">
+            <i class="fas fa-history tab-empty-icon"></i>
+            <p class="tab-empty-title">История пуста</p>
+            <p class="tab-empty-sub">Действия по договору появятся здесь</p>
+          </div>
+          <div v-else-if="!logsFiltered.length" class="log-no-results">
+            <i class="fas fa-filter"></i>
+            <span>Ничего не найдено. <button class="log-no-results-reset" @click="clearFilters">Сбросить фильтры</button></span>
+          </div>
+
+          <!-- Timeline -->
+          <div v-else>
+          <div class="log-results-meta" v-if="filtersActive">
+            Найдено: <strong>{{ logsFiltered.length }}</strong> из {{ logs.length }}
+          </div>
+          <div class="log-timeline">
+            <template v-for="(item, idx) in logsGrouped" :key="idx">
+              <div v-if="item.type === 'day'" class="log-day-sep">
+                <span class="log-day-label">{{ item.label }}</span>
+              </div>
+              <div v-else class="log-entry">
+                <div class="log-action-icon" :style="{ background: logIcon(item.log.full_log || item.log.message).color + '18', color: logIcon(item.log.full_log || item.log.message).color }">
+                  <i class="fas" :class="logIcon(item.log.full_log || item.log.message).icon"></i>
+                </div>
+                <div class="log-content">
+                  <div class="log-content-top">
+                    <div class="log-message-text">{{ item.log.full_log || item.log.message }}</div>
+                    <div class="log-time-badge">{{ formatDateTime(item.log.created_at) }}</div>
+                  </div>
+                  <div class="log-author-row">
+                    <div class="log-user-avatar">
+                      {{ item.log.created_by_user?.name?.[0] }}{{ item.log.created_by_user?.surname?.[0] }}
+                    </div>
+                    <span class="log-author-name">{{ item.log.created_by_user?.short_fio || '—' }}</span>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </div>
+          </div><!-- /v-else timeline wrapper -->
+        </template>
       </div>
     </template>
+
+    <!-- ── Global Modals ── -->
+
+    <!-- Modal: Rename file/folder -->
+    <div v-if="renameModal.show" class="modal-backdrop" @click.self="renameModal.show = false">
+      <div class="modal-box">
+        <div class="modal-title">
+          {{ renameModal.type === 'file' ? 'Переименовать файл' : 'Переименовать папку' }}
+        </div>
+        <input class="modal-input" v-model="renameModal.name"
+          @keyup.enter="submitRename" @keyup.esc="renameModal.show = false" autofocus />
+        <div class="modal-actions">
+          <button class="modal-btn modal-btn--cancel" @click="renameModal.show = false">Отмена</button>
+          <button class="modal-btn modal-btn--ok" :disabled="renameModal.loading" @click="submitRename">
+            <div v-if="renameModal.loading" class="mini-spinner"></div>
+            <span v-else>Сохранить</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Delete file/folder -->
+    <div v-if="deleteModal.show" class="modal-backdrop" @click.self="deleteModal.show = false">
+      <div class="modal-box">
+        <div class="modal-title modal-title--danger">
+          {{ deleteModal.type === 'file' ? 'Удалить файл?' : 'Удалить папку?' }}
+        </div>
+        <div class="modal-body">
+          Вы уверены, что хотите удалить
+          <strong>«{{ deleteModal.name }}»</strong>?
+          <span v-if="deleteModal.type === 'folder'"> Все вложенные файлы будут удалены.</span>
+        </div>
+        <div class="modal-actions">
+          <button class="modal-btn modal-btn--cancel" @click="deleteModal.show = false">Отмена</button>
+          <button class="modal-btn modal-btn--danger" :disabled="deleteModal.loading" @click="submitDelete">
+            <div v-if="deleteModal.loading" class="mini-spinner"></div>
+            <span v-else>Удалить</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Confirm (generic — for statuses and contract delete) -->
+    <div v-if="confirmModal.show" class="modal-backdrop" @click.self="confirmModal.show = false">
+      <div class="modal-box">
+        <div class="modal-body" style="font-size:15px; padding-top:4px">{{ confirmModal.text }}</div>
+        <div class="modal-actions">
+          <button class="modal-btn modal-btn--cancel" :disabled="confirmModal.loading" @click="confirmModal.show = false">Отмена</button>
+          <button :class="['modal-btn', confirmModal.danger ? 'modal-btn--danger' : 'modal-btn--ok']"
+            :disabled="confirmModal.loading" @click="doConfirm">
+            <div v-if="confirmModal.loading" class="mini-spinner"></div>
+            <span v-else>Подтвердить</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Create folder -->
+    <div v-if="createFolderModal.show" class="modal-backdrop" @click.self="createFolderModal.show = false">
+      <div class="modal-box">
+        <div class="modal-title">Создать папку</div>
+        <div v-if="currentFolder" class="modal-hint">Внутри «{{ currentFolder.name }}»</div>
+        <input class="modal-input" v-model="createFolderModal.name" placeholder="Название папки"
+          @keyup.enter="submitCreateFolder" @keyup.esc="createFolderModal.show = false" autofocus />
+        <div class="modal-actions">
+          <button class="modal-btn modal-btn--cancel" @click="createFolderModal.show = false">Отмена</button>
+          <button class="modal-btn modal-btn--ok" :disabled="createFolderModal.loading || !createFolderModal.name.trim()" @click="submitCreateFolder">
+            <div v-if="createFolderModal.loading" class="mini-spinner"></div>
+            <span v-else>Создать</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
   </div>
 </template>
 
@@ -2910,58 +3411,381 @@ onUnmounted(() => {
   overflow-y: auto;
   padding: 24px 32px 40px;
 }
+.tasks-wrap {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 32px 40px;
+}
 
-.log-list {
+/* ── Связи ── */
+.viewer-links-wrap { display: flex; flex-direction: column; padding: 12px; gap: 8px; overflow-y: auto; }
+.viewer-addlink-btn {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 9px; border: 1px dashed var(--border-light); border-radius: 8px;
+  background: none; color: var(--brand-primary); font-size: 13px; font-weight: 600; cursor: pointer;
+  flex-shrink: 0;
+}
+.viewer-addlink-btn:hover { background: var(--brand-light); border-color: var(--brand-primary); }
+
+/* Модалка «Добавить связь» */
+.lm-modal {
+  width: 640px; max-width: 94vw; max-height: 84vh;
+  background: var(--bg-surface); border-radius: 14px;
+  box-shadow: 0 16px 48px rgba(15,23,42,0.24);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.lm-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px 10px; }
+.lm-title { font-size: 16px; font-weight: 700; color: var(--text-primary); }
+.lm-close { border: none; background: none; cursor: pointer; color: var(--text-tertiary); font-size: 16px; }
+.lm-close:hover { color: var(--text-primary); }
+.lm-search { position: relative; padding: 0 20px 12px; flex-shrink: 0; }
+.lm-search i { position: absolute; left: 32px; top: 50%; transform: translateY(calc(-50% - 6px)); color: var(--text-tertiary); font-size: 13px; }
+.lm-search input {
+  width: 100%; height: 38px; padding: 0 12px 0 36px; box-sizing: border-box;
+  border: 1px solid var(--border-light); border-radius: 8px; font-size: 13px; outline: none;
+}
+.lm-search input:focus { border-color: var(--brand-primary); }
+.lm-body { flex: 1; overflow-y: auto; padding: 0 20px 16px; display: flex; flex-direction: column; gap: 8px; }
+.lm-state { padding: 32px; text-align: center; color: var(--text-tertiary); font-size: 13px; display: flex; align-items: center; justify-content: center; gap: 8px; }
+.lm-card { border: 1px solid var(--border-light); border-radius: 10px; overflow: hidden; flex-shrink: 0; }
+.lm-state { flex-shrink: 0; }
+
+/* Список связей во вкладке */
+.links-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
+.link-item {
+  border: 1px solid var(--border-light); border-radius: 10px; padding: 10px 12px;
+  cursor: pointer; flex-shrink: 0; transition: border-color 0.12s, box-shadow 0.12s;
+}
+.link-item:hover { border-color: var(--brand-primary); box-shadow: 0 2px 8px rgba(15,23,42,0.06); }
+.link-item-top { display: flex; align-items: flex-start; gap: 8px; }
+.link-item-name { flex: 1; font-size: 13px; font-weight: 600; color: var(--text-primary); word-break: break-word; }
+.link-item-meta { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.link-item-date { font-size: 11px; color: var(--text-tertiary); margin-left: auto; }
+.lm-card-head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 10px 12px; border: none; background: none; cursor: pointer; text-align: left;
+}
+.lm-card-head:hover { background: var(--bg-subtle); }
+.lm-card-name { flex: 1; font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.lm-count { font-size: 11px; font-weight: 700; color: var(--text-secondary); background: var(--bg-subtle); border-radius: 10px; padding: 1px 7px; }
+.lm-caret { color: var(--text-tertiary); font-size: 11px; transition: transform 0.15s; }
+.lm-caret.open { transform: rotate(180deg); }
+.lm-files { border-top: 1px solid var(--border-light); padding: 6px 12px 8px; display: flex; flex-direction: column; gap: 4px; }
+.lm-file { display: flex; align-items: center; gap: 8px; padding: 5px 4px; font-size: 13px; color: var(--text-primary); border-radius: 6px; }
+.lm-file:hover { background: var(--bg-subtle); }
+.lm-file--empty { color: var(--text-tertiary); font-size: 12px; }
+.lm-file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lm-badge {
+  flex-shrink: 0; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px;
+  padding: 2px 7px; border-radius: 5px;
+}
+.lm-card-head { cursor: pointer; }
+.lm-card-head.selected { background: var(--brand-light); }
+.lm-file { cursor: pointer; }
+.lm-file.selected { background: var(--brand-light); }
+.lm-radio {
+  width: 20px; height: 20px; flex-shrink: 0; border-radius: 50%;
+  border: 2px solid var(--border-light); background: var(--bg-surface);
+  cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 10px; padding: 0; transition: all 0.12s;
+}
+.lm-radio:hover { border-color: var(--brand-primary); }
+.lm-radio.on { background: var(--brand-primary); border-color: var(--brand-primary); }
+.lm-radio--sm { width: 17px; height: 17px; font-size: 8px; }
+.lm-footer {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 20px; border-top: 1px solid var(--border-light); flex-shrink: 0;
+}
+.lm-selected-label {
+  flex: 1; font-size: 13px; color: var(--brand-primary); font-weight: 600;
+  display: flex; align-items: center; gap: 6px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lm-selected-label--empty { color: var(--text-tertiary); font-weight: 400; }
+.lm-link-btn {
+  display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+  padding: 9px 18px; border: none; border-radius: 8px;
+  background: var(--brand-primary); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.lm-link-btn:disabled { opacity: 0.5; cursor: default; }
+.lm-badge--letter { background: #e0f2fe; color: #0369a1; }
+.lm-badge--contract { background: #dcfce7; color: #15803d; }
+.lm-badge--version { background: #fef3c7; color: #b45309; }
+.lm-badge--original { background: #dcfce7; color: #16a34a; }
+.lm-badge--file { background: var(--bg-subtle); color: var(--text-secondary); }
+
+/* ── History filters ── */
+.log-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.log-filter-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 180px;
+  background: var(--bg-surface);
+  border: 1.5px solid var(--border-light);
+  border-radius: 8px;
+  padding: 0 10px;
+  transition: border-color .15s;
+}
+.log-filter-search:focus-within { border-color: var(--brand-primary); }
+.log-filter-search-icon { font-size: 13px; color: var(--text-tertiary); flex-shrink: 0; }
+.log-filter-input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 13.5px;
+  color: var(--text-primary);
+  padding: 8px 0;
+}
+.log-filter-clear-x {
+  background: none; border: none; cursor: pointer;
+  color: var(--text-tertiary); font-size: 12px; padding: 0; flex-shrink: 0;
+}
+.log-filter-clear-x:hover { color: var(--text-primary); }
+
+.log-filter-user-wrap {
+  position: relative;
+  min-width: 180px;
+}
+.log-filter-user-input-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1.5px solid var(--border-light);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  transition: border-color .15s;
+}
+.log-filter-user-input-row.focused { border-color: var(--brand-primary); }
+.log-filter-user-icon { font-size: 12px; color: var(--text-tertiary); flex-shrink: 0; }
+.log-filter-user-input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 13px;
+  color: var(--text-primary);
+  padding: 7.5px 0;
+  min-width: 0;
+}
+.log-filter-user-input::placeholder { color: var(--text-tertiary); }
+.log-filter-user-drop {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: var(--bg-surface);
+  border: 1.5px solid var(--border-light);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.11);
+  z-index: 200;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.ac-item--sel { background: var(--surface-hover, #f5f7fa); font-weight: 500; }
+
+.log-filter-date {
+  padding: 7px 10px;
+  border: 1.5px solid var(--border-light);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  font-size: 13px;
+  color: var(--text-primary);
+  width: 138px;
+}
+.log-filter-date:focus { outline: none; border-color: var(--brand-primary); }
+.log-filter-date-sep { color: var(--text-tertiary); font-size: 13px; flex-shrink: 0; }
+
+.log-filter-reset {
+  padding: 7px 13px;
+  border: 1.5px solid var(--border-light);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  transition: border-color .15s, color .15s;
+}
+.log-filter-reset:hover { border-color: #ef4444; color: #ef4444; }
+
+.log-type-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.log-type-chips:last-of-type { margin-bottom: 16px; }
+.log-chips-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  margin-right: 2px;
+}
+.log-type-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1.5px solid var(--border-light);
+  border-radius: 20px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.log-type-chip i { font-size: 12px; }
+.log-type-chip:hover { border-color: var(--border-medium, #bbb); color: var(--text-primary); }
+.log-type-chip.active { font-weight: 500; }
+
+.log-results-meta {
+  font-size: 12.5px;
+  color: var(--text-tertiary);
+  margin-bottom: 10px;
+}
+.log-results-meta strong { color: var(--text-primary); }
+
+.log-no-results {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 32px 0;
+  color: var(--text-tertiary);
+  font-size: 14px;
+}
+.log-no-results i { font-size: 18px; }
+.log-no-results-reset {
+  background: none; border: none; cursor: pointer;
+  color: var(--brand-primary); font-size: 14px; padding: 0; text-decoration: underline;
+}
+
+/* ── History timeline ── */
+.log-timeline {
   display: flex;
   flex-direction: column;
   gap: 0;
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-lg);
-  background: var(--bg-surface);
-  overflow: hidden;
-  box-shadow: var(--shadow-sm);
+  padding: 8px 0 24px;
 }
 
-.log-item {
+.log-day-sep {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 20px 0 12px;
+}
+.log-day-sep::before,
+.log-day-sep::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border-light);
+}
+.log-day-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  white-space: nowrap;
+  padding: 0 4px;
+}
+
+.log-entry {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-  padding: 14px 20px;
-  border-bottom: 1px solid var(--border-light);
+  gap: 14px;
+  padding: 13px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--border-light);
+  background: var(--bg-surface);
+  margin-bottom: 8px;
+  transition: box-shadow .15s, border-color .15s;
 }
-.log-item:last-child { border-bottom: none; }
+.log-entry:hover {
+  border-color: var(--border-medium, #d0d5dd);
+  box-shadow: 0 2px 8px rgba(0,0,0,.06);
+}
 
-.log-avatar {
-  width: 34px;
-  height: 34px;
+.log-action-icon {
+  flex-shrink: 0;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  margin-top: 1px;
+}
+
+.log-content { flex: 1; min-width: 0; }
+
+.log-content-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.log-message-text {
+  font-size: 13.5px;
+  color: var(--text-primary);
+  line-height: 1.5;
+  flex: 1;
+}
+
+.log-time-badge {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  margin-top: 2px;
+}
+
+.log-author-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.log-user-avatar {
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
   background: var(--brand-primary);
   color: #fff;
-  font-size: 12px;
+  font-size: 9px;
   font-weight: 700;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  opacity: .85;
 }
 
-.log-body { flex: 1; min-width: 0; }
-
-.log-message {
-  font-size: 13px;
-  color: var(--text-primary);
-  line-height: 1.5;
-}
-
-.log-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 4px;
+.log-author-name {
   font-size: 12px;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
+  font-weight: 500;
 }
-.log-sep { color: var(--border-light); }
 
 /* ── Edit mode ── */
 .header-title-row {
@@ -2988,6 +3812,67 @@ onUnmounted(() => {
   letter-spacing: .01em;
 }
 .edit-contract-btn:hover { background: var(--brand-primary); color: #fff; }
+
+.header-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.delete-contract-btn {
+  padding: 7px 16px;
+  border: 1.5px solid #ef4444;
+  border-radius: 8px;
+  background: transparent;
+  color: #ef4444;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  transition: background .15s, color .15s;
+}
+.delete-contract-btn:hover { background: #ef4444; color: #fff; }
+
+.modal-error {
+  color: #ef4444;
+  font-size: 13px;
+  margin: 0 0 8px;
+}
+
+/* Status actions bar */
+.status-actions-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0 10px;
+  flex-wrap: wrap;
+  margin-left: 32px;
+}
+.status-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1.5px solid;
+  transition: background .15s, color .15s;
+  white-space: nowrap;
+}
+.status-action-btn:disabled { opacity: .6; cursor: default; }
+.status-action-btn--sign    { border-color: #3b82f6; color: #3b82f6; background: transparent; }
+.status-action-btn--sign:not(:disabled):hover { background: #3b82f6; color: #fff; }
+.status-action-btn--original { border-color: #f59e0b; color: #f59e0b; background: transparent; }
+.status-action-btn--original:not(:disabled):hover { background: #f59e0b; color: #fff; }
+.status-action-btn--verify  { border-color: #10b981; color: #10b981; background: transparent; }
+.status-action-btn--verify:not(:disabled):hover { background: #10b981; color: #fff; }
+.status-action-btn--undo    { border-color: #94a3b8; color: #94a3b8; background: transparent; }
+.status-action-btn--undo:not(:disabled):hover { background: #94a3b8; color: #fff; }
 
 /* Save bar */
 .edit-save-bar {

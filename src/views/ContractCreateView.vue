@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import TopNav from '../components/layout/TopNav.vue'
 import { mainNavLinks } from '../constants/mainNav'
@@ -92,7 +92,7 @@ const loadAll = async () => {
 const docType      = ref(null)
 const docTypeQuery = ref('')
 const docTypeOpen  = ref(false)
-const subject      = ref('')
+const subject      = ref('') // kept for draft compat, synced from fullName
 
 const filteredDocTypes = computed(() => {
   const q = docTypeQuery.value.trim().toLowerCase()
@@ -102,8 +102,39 @@ const filteredDocTypes = computed(() => {
 const hasExactDocType = computed(() =>
   docTypesList.value.some(d => d.name.toLowerCase() === docTypeQuery.value.trim().toLowerCase())
 )
-const selectDocType  = (dt) => { docType.value = dt; docTypeQuery.value = dt.name; docTypeOpen.value = false }
-const onDocTypeInput = ()   => { docType.value = null; docTypeOpen.value = true }
+const fullName     = ref('')
+const fullNamePrefix = ref('') // часть из типа документа — нельзя стереть
+
+const selectDocType = (dt) => {
+  docType.value = dt
+  docTypeQuery.value = dt.name
+  docTypeOpen.value = false
+  // Подставить имя типа в поле полного названия если оно пустое или равно старому префиксу
+  if (!fullName.value || fullName.value === fullNamePrefix.value) {
+    fullName.value = dt.name + ' '
+  } else if (!fullName.value.startsWith(fullNamePrefix.value)) {
+    fullName.value = dt.name + ' ' + fullName.value.trim()
+  } else {
+    const suffix = fullName.value.slice(fullNamePrefix.value.length)
+    fullName.value = dt.name + ' ' + suffix.trimStart()
+  }
+  fullNamePrefix.value = dt.name + ' '
+}
+const onDocTypeInput = () => { docType.value = null; docTypeOpen.value = true }
+
+const onFullNameInput = (e) => {
+  const val = e.target.value
+  if (fullNamePrefix.value && !val.startsWith(fullNamePrefix.value)) {
+    // Не даём стереть префикс
+    fullName.value = fullNamePrefix.value
+    nextTick(() => {
+      e.target.value = fullNamePrefix.value
+      e.target.setSelectionRange(fullNamePrefix.value.length, fullNamePrefix.value.length)
+    })
+  } else {
+    fullName.value = val
+  }
+}
 const createDocType  = async () => {
   const name = docTypeQuery.value.trim()
   if (!name) return
@@ -122,8 +153,8 @@ const createDocType  = async () => {
 
 // ── Step 2 ─────────────────────────────────────────────────
 const parties = ref([
-  { role: 'Заказчик',  company: null, query: '', open: false, fixed: true },
-  { role: 'Подрядчик', company: null, query: '', open: false, fixed: true },
+  { role: 'Заказчик (Застройщик, Инвестор, Ген. подрядчик, Подрядчик)', company: null, query: '', open: false, fixed: true },
+  { role: 'Исполнитель (Подрядчик, Субподрядчик)',                       company: null, query: '', open: false, fixed: true },
 ])
 const filterCPs = (q) => {
   const query = (q || '').trim().toLowerCase()
@@ -149,9 +180,9 @@ const goCreateCompany = (partyIdx) => {
     partyIdx,
     docTypeId:   docType.value?.id   || null,
     docTypeName: docType.value?.name || null,
-    subject:     subject.value,
+    subject:     fullName.value,
   }))
-  router.push('/organizations/create')
+  window.open('/organizations/create', '_blank')
 }
 
 // При маунте — проверяем, вернулись ли со страницы создания компании
@@ -169,7 +200,7 @@ const restoreDraftAfterOrgCreate = async () => {
       const dt = docTypesList.value.find(d => d.id === draft.docTypeId)
       if (dt) selectDocType(dt)
     }
-    subject.value = draft.subject || ''
+    fullName.value = draft.subject || ''
     currentStep.value = draft.step ?? 1
   } catch { /* silent */ }
 }
@@ -191,7 +222,7 @@ const buildContractNum = () => {
       break
     }
   }
-  contractNum.value = prefix + `${d}-${m}-${y}`
+  contractNum.value = prefix + `${d}-${m}-${y.slice(-2)}`
 }
 watch([contractDate, parties], buildContractNum, { deep: true })
 
@@ -363,7 +394,7 @@ const submit = async () => {
     const contractRes = await postJSON('/apisup/supply/contracts', {
       num:              contractNum.value || null,
       document_type_id: docType.value?.id,
-      name:             subject.value || null,
+      name:             (fullNamePrefix.value ? fullName.value.slice(fullNamePrefix.value.length).trim() : fullName.value.trim()) || null,
       date:             contractDate.value,
       date_start:       dateStart.value || null,
       date_end:         dateEnd.value   || null,
@@ -438,7 +469,8 @@ const submit = async () => {
     // Все параллельно
     await Promise.all([...partyCalls, ...objectCalls, ...wtCalls, ...roleCalls])
 
-    router.push('/documents')
+    sessionStorage.removeItem('contractDraft')
+    router.push(`/documents/contracts/${contractId}`)
   } catch (e) {
     submitError.value = e.message || 'Ошибка при создании договора'
   } finally {
@@ -446,9 +478,34 @@ const submit = async () => {
   }
 }
 
+const onWindowFocus = async () => {
+  // Перезагружаем контрагентов когда возвращаемся из другой вкладки
+  const r = await fetch('/apiref/ref/counterparties', { credentials: 'include' })
+  if (r.ok) counterparties.value = await r.json()
+}
+
+const closeAllDropdowns = (e) => {
+  if (e.target.closest('.autocomplete') || e.target.closest('.ac-drop')) return
+  docTypeOpen.value  = false
+  objectOpen.value   = false
+  projectOpen.value  = false
+  wtOpen.value       = false
+  executorOpen.value = false
+  coExOpen.value     = false
+  obsOpen.value      = false
+  parties.value.forEach(p => { p.open = false })
+}
+
 onMounted(async () => {
   await loadAll()
   await restoreDraftAfterOrgCreate()
+  window.addEventListener('focus', onWindowFocus)
+  document.addEventListener('mousedown', closeAllDropdowns)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('focus', onWindowFocus)
+  document.removeEventListener('mousedown', closeAllDropdowns)
 })
 </script>
 
@@ -558,9 +615,18 @@ onMounted(async () => {
               <div class="field-divider"></div>
 
               <div class="field-group field-group--last">
-                <label class="field-label">Предмет договора</label>
-                <p class="field-desc">Краткое содержательное описание того, что является основным обязательством по договору. Не обязательно к заполнению.</p>
-                <textarea v-model="subject" class="field-textarea" rows="4" placeholder="Например: выполнение строительно-монтажных работ на объекте ЖК «Северный»..."></textarea>
+                <label class="field-label">Полное название договора</label>
+                <p class="field-desc">Автоматически заполняется из типа документа. Можно дополнить — но удалить название типа нельзя.</p>
+                <textarea
+                  :value="fullName"
+                  @input="onFullNameInput"
+                  class="field-textarea" rows="3"
+                  placeholder="Выберите тип документа — название подставится автоматически..."
+                ></textarea>
+                <div v-if="fullNamePrefix && fullName" class="full-name-hint">
+                  <i class="fas fa-lock" style="font-size:11px"></i>
+                  Зафиксировано: <strong>{{ fullNamePrefix.trim() }}</strong>
+                </div>
               </div>
             </div>
           </template>
@@ -778,9 +844,9 @@ onMounted(async () => {
             <p class="step-desc">{{ STEPS[6].desc }}</p>
 
             <div class="form-card">
-              <!-- Исполнитель -->
+              <!-- Ответственный -->
               <div class="field-group">
-                <label class="field-label required-label">Исполнитель</label>
+                <label class="field-label required-label">Ответственный</label>
                 <p class="field-desc">Сотрудник, несущий персональную ответственность за ведение договора. Может быть только один. По умолчанию — вы.</p>
                 <div class="autocomplete">
                   <input
@@ -799,22 +865,22 @@ onMounted(async () => {
                 <div v-if="executor" class="selected-row">
                   <i class="fas fa-user-circle" style="color:var(--brand-primary)"></i>
                   <span>{{ uName(executor) }}</span>
-                  <span class="role-badge role-badge--exec">Исполнитель</span>
+                  <span class="role-badge role-badge--exec">Ответственный</span>
                   <button class="clear-btn" @click="clearExecutor"><i class="fas fa-times"></i></button>
                 </div>
               </div>
 
               <div class="field-divider"></div>
 
-              <!-- Соисполнители -->
+              <!-- Исполнители -->
               <div class="field-group">
-                <label class="field-label">Соисполнители</label>
-                <p class="field-desc">Сотрудники, участвующие в работе по договору совместно с исполнителем. Может быть несколько.</p>
+                <label class="field-label">Исполнители</label>
+                <p class="field-desc">Сотрудники, участвующие в работе по договору совместно с ответственным. Может быть несколько.</p>
                 <div class="autocomplete">
                   <input
                     v-model="coExQuery"
                     class="field-input"
-                    placeholder="Добавить соисполнителя..."
+                    placeholder="Добавить исполнителя..."
                     @focus="coExOpen = true"
                     @blur="setTimeout(() => coExOpen = false, 160)"
                     @input="coExOpen = true"
@@ -828,7 +894,7 @@ onMounted(async () => {
                   <div v-for="u in coExecutors" :key="u.id" class="person-row">
                     <i class="fas fa-user"></i>
                     <span>{{ uName(u) }}</span>
-                    <span class="role-badge">Соисполнитель</span>
+                    <span class="role-badge">Исполнитель</span>
                     <button @click="removeCoEx(u.id)"><i class="fas fa-times"></i></button>
                   </div>
                 </div>
@@ -1205,6 +1271,15 @@ onMounted(async () => {
 }
 .field-textarea:focus { border-color: var(--brand-primary); background: var(--bg-surface); }
 .field-textarea::placeholder { color: var(--text-tertiary); }
+.full-name-hint {
+  margin-top: 5px;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.full-name-hint strong { color: var(--text-secondary); }
 
 .readonly-field {
   padding: 10px 12px;

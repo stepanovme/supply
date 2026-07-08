@@ -573,6 +573,23 @@ export const useChatStore = defineStore('chat', {
           this._badgeCountsReady = true
           break
         }
+        case 'incomplete_count':
+        case 'task_created':
+        case 'task_updated':
+        case 'task_deleted':
+        case 'task_log':
+        case 'task_item_updated':
+        case 'board_created':
+        case 'board_updated':
+        case 'board_deleted':
+        case 'column_created':
+        case 'column_updated':
+        case 'column_deleted': {
+          import('./tasks').then(({ useTasksStore }) => {
+            useTasksStore().dispatchWs(type, parsed)
+          })
+          break
+        }
       }
     },
 

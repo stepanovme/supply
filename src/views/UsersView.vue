@@ -9,6 +9,7 @@ const navLinks = mainNavLinks
 const tabs = [
   { key: 'orgs', label: 'Организации' },
   { key: 'users', label: 'Пользователи' },
+  { key: 'departments', label: 'Отделы и группы' },
 ]
 
 const activeTab = ref('users')
@@ -737,10 +738,271 @@ const loadUsers = async () => {
   }
 }
 
+// ── Отделы и группы ─────────────────────────────────────────
+const departments = ref([])
+const deptLoading = ref(false)
+const deptModalOpen = ref(false)
+const deptName = ref('')
+const deptUsers = ref([])        // выбранные [{ id, name, initials }]
+const deptUserQuery = ref('')
+const deptUserDdOpen = ref(false)
+const deptSaving = ref(false)
+const deptError = ref('')
+const allDeptUsers = ref([])     // все пользователи для выбора
+
+const deptUserInitials = (u) => `${(u.surname?.[0] || '').toUpperCase()}${(u.name?.[0] || '').toUpperCase()}` || '?'
+
+const loadAllDeptUsers = async () => {
+  if (allDeptUsers.value.length) return
+  try {
+    const r = await fetch('/api/as/users/all', { credentials: 'include' })
+    if (r.ok) {
+      const d = await r.json()
+      allDeptUsers.value = (d.items ?? d).map(u => ({
+        id: u.id,
+        name: [u.surname, u.name, u.patronymic].filter(Boolean).join(' '),
+        initials: deptUserInitials(u),
+      }))
+    }
+  } catch {}
+}
+
+const loadDepartments = async () => {
+  deptLoading.value = true
+  try {
+    const r = await fetch('/apisup/supply/departments/my', { credentials: 'include' })
+    if (r.ok) {
+      const d = await r.json()
+      departments.value = Array.isArray(d) ? d : (d.items ?? d.data ?? [])
+    }
+  } catch (e) { console.error(e) } finally { deptLoading.value = false }
+}
+
+// ── Права: создатель отдела или админ в отделе ─────────────
+const myUserId = ref(null)
+const loadMe = async () => {
+  try {
+    const r = await fetch('/api/as/users/me', { credentials: 'include' })
+    if (r.ok) { const me = await r.json(); myUserId.value = me?.id ?? null }
+  } catch {}
+}
+const canManageDept = (dep) => {
+  if (!myUserId.value) return false
+  if (String(dep?.created_by) === String(myUserId.value)) return true
+  // если членство пришло вместе со списком/деталью
+  const roles = dep?.users ?? dep?.user_roles ?? []
+  if (roles.some(m => String(m.user_id ?? m.user?.id) === String(myUserId.value) && m.role_id === 'admin')) return true
+  // если открыта страница этого отдела — смотрим загруженных участников
+  if (deptDetail.value && String(deptDetail.value.id) === String(dep?.id)) {
+    return deptMembers.value.some(m => String(memberUserId(m)) === String(myUserId.value) && m.role_id === 'admin')
+  }
+  return false
+}
+
+// ── Меню карточки отдела (⋮) ────────────────────────────────
+const deptMenuId = ref(null)
+const deptMenuStyle = ref({})
+const toggleDeptMenu = (dep, ev) => {
+  if (deptMenuId.value === dep.id) { deptMenuId.value = null; return }
+  const r = ev.currentTarget.getBoundingClientRect()
+  deptMenuStyle.value = { position: 'fixed', top: (r.bottom + 4) + 'px', left: Math.max(8, r.right - 180) + 'px', zIndex: 9999 }
+  deptMenuId.value = dep.id
+}
+const closeDeptMenu = () => { deptMenuId.value = null }
+
+// Переименование
+const deptRename = ref(null) // { id, name }
+const deptRenameSaving = ref(false)
+const openDeptRename = (dep) => { deptRename.value = { id: dep.id, name: dep.name }; closeDeptMenu() }
+const submitDeptRename = async () => {
+  const r0 = deptRename.value
+  if (!r0 || !r0.name.trim() || deptRenameSaving.value) return
+  deptRenameSaving.value = true
+  try {
+    const r = await fetch(`/apisup/supply/departments/${r0.id}`, {
+      method: 'PATCH', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: r0.name.trim() }),
+    })
+    if (r.ok) {
+      const dep = departments.value.find(d => d.id === r0.id)
+      if (dep) dep.name = r0.name.trim()
+      if (deptDetail.value?.id === r0.id) deptDetail.value.name = r0.name.trim()
+      deptRename.value = null
+    }
+  } catch (e) { console.error(e) } finally { deptRenameSaving.value = false }
+}
+
+// Удаление отдела
+const deptDelete = ref(null) // dep
+const deptDeleting = ref(false)
+const openDeptDelete = (dep) => { deptDelete.value = dep; closeDeptMenu() }
+const confirmDeptDelete = async () => {
+  const dep = deptDelete.value
+  if (!dep || deptDeleting.value) return
+  deptDeleting.value = true
+  try {
+    const r = await fetch(`/apisup/supply/departments/${dep.id}`, { method: 'DELETE', credentials: 'include' })
+    if (r.ok) {
+      departments.value = departments.value.filter(d => d.id !== dep.id)
+      if (deptDetail.value?.id === dep.id) deptDetail.value = null
+      deptDelete.value = null
+    }
+  } catch (e) { console.error(e) } finally { deptDeleting.value = false }
+}
+
+// ── Страница отдела: участники ──────────────────────────────
+const deptDetail = ref(null)
+const deptMembers = ref([])
+const deptMembersLoading = ref(false)
+
+const memberUserId = (m) => m.user_id ?? m.user?.id ?? m.created_by
+const memberUser = (m) => m.user ?? m.created_by_user ?? null
+const memberName = (m) => {
+  const u = memberUser(m)
+  if (!u) return allDeptUsers.value.find(x => String(x.id) === String(memberUserId(m)))?.name || '—'
+  return u.short_fio || [u.surname, u.name, u.patronymic].filter(Boolean).join(' ') || '—'
+}
+const memberInitials = (m) => {
+  const u = memberUser(m)
+  if (u) return deptUserInitials(u)
+  return allDeptUsers.value.find(x => String(x.id) === String(memberUserId(m)))?.initials || '?'
+}
+const isDeptCreator = (m) => deptDetail.value && String(memberUserId(m)) === String(deptDetail.value.created_by)
+
+const openDeptDetail = async (dep) => {
+  deptDetail.value = dep
+  loadAllDeptUsers()
+  await loadDeptMembers(dep.id)
+}
+const closeDeptDetail = () => { deptDetail.value = null; deptMembers.value = [] }
+const loadDeptMembers = async (deptId) => {
+  deptMembersLoading.value = true
+  try {
+    const r = await fetch(`/apisup/supply/departments/${deptId}/users`, { credentials: 'include' })
+    if (r.ok) {
+      const d = await r.json()
+      deptMembers.value = Array.isArray(d) ? d : (d.items ?? d.data ?? [])
+    }
+  } catch (e) { console.error(e) } finally { deptMembersLoading.value = false }
+}
+
+// Добавление участника на странице отдела
+const memberAddQuery = ref('')
+const memberAddDdOpen = ref(false)
+const hideMemberAddDd = () => setTimeout(() => { memberAddDdOpen.value = false }, 150)
+const memberAddFiltered = computed(() => {
+  const q = memberAddQuery.value.toLowerCase().trim()
+  return allDeptUsers.value.filter(u =>
+    (!q || u.name.toLowerCase().includes(q)) &&
+    !deptMembers.value.some(m => String(memberUserId(m)) === String(u.id))
+  )
+})
+const addMemberToDept = async (u) => {
+  const dep = deptDetail.value; if (!dep) return
+  memberAddQuery.value = ''; memberAddDdOpen.value = false
+  try {
+    const r = await fetch(`/apisup/supply/departments/${dep.id}/users`, {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ departament_id: dep.id, user_id: u.id, role_id: 'participant' }),
+    })
+    if (r.ok) await loadDeptMembers(dep.id)
+  } catch (e) { console.error(e) }
+}
+
+// Смена роли участника
+const changeMemberRole = async (m, roleId) => {
+  if (m.role_id === roleId) return
+  const prev = m.role_id
+  m.role_id = roleId
+  try {
+    const r = await fetch(`/apisup/supply/departments/users/${m.id}`, {
+      method: 'PATCH', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role_id: roleId }),
+    })
+    if (!r.ok) m.role_id = prev
+  } catch { m.role_id = prev }
+}
+
+// Удаление участника (с подтверждением)
+const memberDelete = ref(null) // membership
+const memberDeleting = ref(false)
+const confirmMemberDelete = async () => {
+  const m = memberDelete.value
+  if (!m || memberDeleting.value) return
+  memberDeleting.value = true
+  try {
+    const r = await fetch(`/apisup/supply/departments/users/${m.id}`, { method: 'DELETE', credentials: 'include' })
+    if (r.ok) {
+      deptMembers.value = deptMembers.value.filter(x => x.id !== m.id)
+      memberDelete.value = null
+    }
+  } catch (e) { console.error(e) } finally { memberDeleting.value = false }
+}
+
+const deptUsersFiltered = computed(() => {
+  const q = deptUserQuery.value.toLowerCase().trim()
+  return allDeptUsers.value.filter(u =>
+    (!q || u.name.toLowerCase().includes(q)) && !deptUsers.value.some(s => s.id === u.id)
+  )
+})
+
+const openDeptModal = () => {
+  deptName.value = ''
+  deptUsers.value = []
+  deptUserQuery.value = ''
+  deptUserDdOpen.value = false
+  deptError.value = ''
+  deptModalOpen.value = true
+  loadAllDeptUsers()
+}
+const closeDeptModal = () => { deptModalOpen.value = false }
+const addDeptUser = (u) => {
+  if (!deptUsers.value.some(s => s.id === u.id)) deptUsers.value.push(u)
+  deptUserQuery.value = ''
+  deptUserDdOpen.value = false
+}
+const removeDeptUser = (id) => { deptUsers.value = deptUsers.value.filter(u => u.id !== id) }
+
+const submitDepartment = async () => {
+  const name = deptName.value.trim()
+  if (!name || deptSaving.value) return
+  deptSaving.value = true
+  deptError.value = ''
+  try {
+    const r = await fetch('/apisup/supply/departments', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+    if (!r.ok) throw new Error(await r.text())
+    const d = await r.json().catch(() => ({}))
+    const deptId = d.id ?? d.data?.id
+    if (deptId != null) {
+      for (const u of deptUsers.value) {
+        await fetch(`/apisup/supply/departments/${deptId}/users`, {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ departament_id: deptId, user_id: u.id, role_id: 'participant' }),
+        })
+      }
+    }
+    closeDeptModal()
+    loadDepartments()
+  } catch (e) {
+    console.error(e)
+    deptError.value = 'Не удалось создать отдел'
+  } finally { deptSaving.value = false }
+}
+
 onMounted(() => {
   loadCompanies().finally(() => {
     loadUsers()
   })
+  loadDepartments()
+  loadMe()
   window.addEventListener('mousedown', handleWindowClick)
 })
 
@@ -759,6 +1021,9 @@ onBeforeUnmount(() => {
           <RouterLink v-if="activeTab === 'orgs'" class="btn btn-primary btn-link" to="/organizations/create">
             <i class="fas fa-plus"></i> Создать организацию
           </RouterLink>
+          <button v-else-if="activeTab === 'departments'" class="btn btn-primary" type="button" @click="openDeptModal">
+            <i class="fas fa-plus"></i> Создать
+          </button>
           <button v-else class="btn btn-primary" type="button" @click="openCreateUserModal">
             <i class="fas fa-plus"></i> Создать пользователя
           </button>
@@ -920,6 +1185,188 @@ onBeforeUnmount(() => {
             </tr>
           </tbody>
         </table>
+      </div>
+
+      <!-- ── Отделы и группы ── -->
+      <div v-if="activeTab === 'departments'" class="dept-wrap">
+        <!-- Страница отдела -->
+        <template v-if="deptDetail">
+          <div class="dept-detail-head">
+            <button class="dept-back" type="button" @click="closeDeptDetail"><i class="fas fa-arrow-left"></i></button>
+            <div class="dept-icon"><i class="fas fa-sitemap"></i></div>
+            <div class="dept-detail-name">{{ deptDetail.name }}</div>
+            <div v-if="canManageDept(deptDetail)" class="dept-menu-wrap">
+              <button class="dept-dots" type="button" @click.stop="toggleDeptMenu(deptDetail, $event)"><i class="fas fa-ellipsis-vertical"></i></button>
+            </div>
+          </div>
+
+          <!-- Добавить участника -->
+          <div v-if="canManageDept(deptDetail)" class="dept-field" style="max-width:420px">
+            <span>Добавить участника</span>
+            <div class="dept-combo">
+              <div class="dept-combo-box">
+                <input v-model="memberAddQuery" class="dept-combo-input" placeholder="Поиск пользователя..."
+                  @focus="memberAddDdOpen = true" @input="memberAddDdOpen = true" @blur="hideMemberAddDd" />
+              </div>
+              <div v-if="memberAddDdOpen && memberAddFiltered.length" class="dept-combo-dd" @mousedown.prevent>
+                <button v-for="u in memberAddFiltered.slice(0, 30)" :key="u.id" type="button" class="dept-combo-item" @click="addMemberToDept(u)">
+                  <span class="dept-avatar">{{ u.initials }}</span>
+                  <span>{{ u.name }}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="deptMembersLoading" class="dept-empty">Загрузка участников...</div>
+          <div v-else class="dept-members-list">
+            <div v-for="m in deptMembers" :key="m.id" class="dept-member-row">
+              <span class="dept-avatar">{{ memberInitials(m) }}</span>
+              <span class="dept-member-name">{{ memberName(m) }}</span>
+              <span v-if="isDeptCreator(m)" class="dept-role-badge dept-role-badge--creator">Создатель</span>
+              <template v-if="canManageDept(deptDetail) && !isDeptCreator(m)">
+                <select class="dept-role-select" :value="m.role_id" @change="changeMemberRole(m, $event.target.value)">
+                  <option value="participant">Участник</option>
+                  <option value="admin">Администратор</option>
+                </select>
+                <button class="dept-member-del" type="button" title="Удалить из отдела" @click="memberDelete = m">
+                  <i class="fas fa-xmark"></i>
+                </button>
+              </template>
+              <span v-else class="dept-role-badge" :class="{ 'dept-role-badge--admin': m.role_id === 'admin' }">
+                {{ m.role_id === 'admin' ? 'Администратор' : 'Участник' }}
+              </span>
+            </div>
+            <div v-if="!deptMembers.length" class="dept-empty">В отделе пока нет участников</div>
+          </div>
+        </template>
+
+        <!-- Список отделов -->
+        <template v-else>
+          <div v-if="deptLoading" class="empty-row" style="padding:32px;text-align:center">Загрузка...</div>
+          <div v-else-if="!departments.length" class="dept-empty">
+            <i class="fas fa-sitemap" style="font-size:36px;color:#e2e8f0"></i>
+            <div>Отделы и группы ещё не созданы</div>
+            <button class="btn btn-primary" type="button" @click="openDeptModal"><i class="fas fa-plus"></i> Создать</button>
+          </div>
+          <div v-else class="dept-grid">
+            <div v-for="dep in departments" :key="dep.id" class="dept-card" @click="openDeptDetail(dep)">
+              <div class="dept-card-top">
+                <div class="dept-icon"><i class="fas fa-sitemap"></i></div>
+                <div class="dept-name">{{ dep.name }}</div>
+                <button v-if="canManageDept(dep)" class="dept-dots" type="button" title="Действия" @click.stop="toggleDeptMenu(dep, $event)">
+                  <i class="fas fa-ellipsis-vertical"></i>
+                </button>
+              </div>
+              <div class="dept-members" v-if="dep.users?.length || dep.user_roles?.length">
+                <span class="dept-members-count">
+                  <i class="fas fa-users"></i> {{ (dep.users || dep.user_roles || []).length }}
+                </span>
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- Контекстное меню отдела -->
+      <Teleport to="body">
+        <div v-if="deptMenuId" class="dept-menu-overlay" @mousedown="closeDeptMenu"></div>
+        <div v-if="deptMenuId" class="dept-menu" :style="deptMenuStyle" @mousedown.stop>
+          <button class="dept-menu-item" type="button" @click="openDeptRename(departments.find(d => d.id === deptMenuId) || deptDetail)">
+            <i class="fas fa-pen"></i> Изменить название
+          </button>
+          <button class="dept-menu-item dept-menu-item--danger" type="button" @click="openDeptDelete(departments.find(d => d.id === deptMenuId) || deptDetail)">
+            <i class="fas fa-trash"></i> Удалить
+          </button>
+        </div>
+      </Teleport>
+
+      <!-- Переименование отдела -->
+      <div v-if="deptRename" class="modal-backdrop" @click="deptRename = null">
+        <div class="modal-card" @click.stop>
+          <div class="modal-title">Изменить название</div>
+          <label class="dept-field">
+            <span>Название</span>
+            <input v-model="deptRename.name" class="filter-input" type="text" @keyup.enter="submitDeptRename" autofocus />
+          </label>
+          <div class="modal-actions">
+            <button class="btn" type="button" :disabled="deptRenameSaving" @click="deptRename = null">Отмена</button>
+            <button class="btn btn-primary" type="button" :disabled="deptRenameSaving || !deptRename.name.trim()" @click="submitDeptRename">
+              <i v-if="deptRenameSaving" class="fas fa-spinner fa-spin"></i> Сохранить
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Подтверждение удаления отдела -->
+      <div v-if="deptDelete" class="modal-backdrop" @click="deptDelete = null">
+        <div class="modal-card" @click.stop>
+          <div class="modal-title">Удалить отдел «{{ deptDelete.name }}»?</div>
+          <div class="modal-subtitle">Это действие необратимо. Участники не будут удалены из системы.</div>
+          <div class="modal-actions">
+            <button class="btn" type="button" :disabled="deptDeleting" @click="deptDelete = null">Отмена</button>
+            <button class="btn dept-btn-danger" type="button" :disabled="deptDeleting" @click="confirmDeptDelete">
+              <i v-if="deptDeleting" class="fas fa-spinner fa-spin"></i> Удалить
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Подтверждение удаления участника -->
+      <div v-if="memberDelete" class="modal-backdrop" @click="memberDelete = null">
+        <div class="modal-card" @click.stop>
+          <div class="modal-title">Удалить участника?</div>
+          <div class="modal-subtitle">{{ memberName(memberDelete) }} будет исключён из отдела.</div>
+          <div class="modal-actions">
+            <button class="btn" type="button" :disabled="memberDeleting" @click="memberDelete = null">Отмена</button>
+            <button class="btn dept-btn-danger" type="button" :disabled="memberDeleting" @click="confirmMemberDelete">
+              <i v-if="memberDeleting" class="fas fa-spinner fa-spin"></i> Удалить
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Модалка создания отдела/группы ── -->
+      <div v-if="deptModalOpen" class="modal-backdrop" @click="closeDeptModal">
+        <div class="modal-card" @click.stop>
+          <div class="modal-title">Создать отдел или группу</div>
+          <div class="modal-subtitle">Укажите название и участников</div>
+
+          <label class="dept-field">
+            <span>Название</span>
+            <input v-model="deptName" class="filter-input" type="text" placeholder="Например, Отдел закупок"
+              @keyup.enter="submitDepartment" autofocus />
+          </label>
+
+          <div class="dept-field">
+            <span>Участники</span>
+            <div class="dept-combo">
+              <div class="dept-combo-box">
+                <span v-for="u in deptUsers" :key="u.id" class="dept-chip">
+                  {{ u.name }}
+                  <button type="button" class="dept-chip-x" @click="removeDeptUser(u.id)"><i class="fas fa-xmark"></i></button>
+                </span>
+                <input v-model="deptUserQuery" class="dept-combo-input" placeholder="Добавить пользователя..."
+                  @focus="deptUserDdOpen = true" @input="deptUserDdOpen = true" />
+              </div>
+              <div v-if="deptUserDdOpen && deptUsersFiltered.length" class="dept-combo-dd" @mousedown.prevent>
+                <button v-for="u in deptUsersFiltered.slice(0, 30)" :key="u.id" type="button" class="dept-combo-item" @click="addDeptUser(u)">
+                  <span class="dept-avatar">{{ u.initials }}</span>
+                  <span>{{ u.name }}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="deptError" class="dept-error">{{ deptError }}</div>
+
+          <div class="modal-actions">
+            <button class="btn" type="button" :disabled="deptSaving" @click="closeDeptModal">Отмена</button>
+            <button class="btn btn-primary" type="button" :disabled="deptSaving || !deptName.trim()" @click="submitDepartment">
+              <i v-if="deptSaving" class="fas fa-spinner fa-spin"></i>
+              {{ deptSaving ? 'Создание...' : 'Создать' }}
+            </button>
+          </div>
+        </div>
       </div>
 
       <div v-if="isCreateUserModalOpen" class="modal-backdrop" @click="closeCreateUserModal">
@@ -1593,4 +2040,129 @@ onBeforeUnmount(() => {
 .modal-error {
   margin-top: 14px;
 }
+/* ── Отделы и группы ── */
+.dept-wrap { flex: 1; overflow-y: auto; }
+.dept-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+  padding: 48px; color: var(--text-tertiary); font-size: 14px;
+}
+.dept-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px;
+  padding: 4px 0 24px;
+}
+.dept-card {
+  border: 1px solid var(--border-light); border-radius: 12px; padding: 14px 16px;
+  background: var(--bg-surface); transition: border-color 0.12s, box-shadow 0.12s;
+}
+.dept-card:hover { border-color: var(--brand-primary); box-shadow: 0 2px 8px rgba(15,23,42,0.06); }
+.dept-card-top { display: flex; align-items: center; gap: 10px; }
+.dept-icon {
+  width: 36px; height: 36px; border-radius: 10px; flex-shrink: 0;
+  background: var(--brand-light, #eff6ff); color: var(--brand-primary);
+  display: flex; align-items: center; justify-content: center; font-size: 15px;
+}
+.dept-name { font-size: 14px; font-weight: 600; color: var(--text-primary); word-break: break-word; }
+.dept-members { margin-top: 10px; }
+.dept-members-count { font-size: 12px; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 6px; }
+
+/* Модалка отдела */
+.modal-card {
+  width: min(520px, 100%);
+  max-height: calc(100vh - 32px);
+  overflow: visible;
+  background: var(--bg-surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: 20px;
+}
+.dept-field { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
+.dept-field > span { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+.dept-combo { position: relative; }
+.dept-combo-box {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 5px; min-height: 40px;
+  padding: 4px 8px; border: 1px solid var(--border-light); border-radius: 8px; background: var(--bg-surface);
+}
+.dept-combo-box:focus-within { border-color: var(--brand-primary); }
+.dept-combo-input { flex: 1; min-width: 120px; border: none; outline: none; background: none; font-size: 13px; padding: 5px 2px; }
+.dept-combo-dd {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 400;
+  background: var(--bg-surface); border: 1px solid var(--border-light); border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.12); max-height: 220px; overflow-y: auto; padding: 4px;
+}
+.dept-combo-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  border: none; background: none; cursor: pointer; padding: 7px 8px; border-radius: 6px;
+  font-size: 13px; color: var(--text-primary);
+}
+.dept-combo-item:hover { background: var(--bg-subtle); }
+.dept-avatar {
+  width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0;
+  background: var(--brand-light, #eff6ff); color: var(--brand-primary);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700;
+}
+.dept-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--brand-light, #eff6ff); color: var(--brand-primary);
+  border-radius: 6px; padding: 3px 5px 3px 8px; font-size: 12px; font-weight: 600;
+}
+.dept-chip-x { border: none; background: none; color: inherit; cursor: pointer; padding: 0; font-size: 10px; display: flex; }
+.dept-error { margin-top: 12px; font-size: 12px; color: #ef4444; }
+
+/* Карточка: три точки + меню */
+.dept-card { cursor: pointer; }
+.dept-dots {
+  margin-left: auto; flex-shrink: 0; width: 28px; height: 28px; border-radius: 7px;
+  border: none; background: none; cursor: pointer; color: var(--text-secondary); font-size: 13px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.dept-dots:hover { background: var(--bg-subtle); color: var(--text-primary); }
+.dept-menu-overlay { position: fixed; inset: 0; z-index: 9998; }
+.dept-menu {
+  min-width: 190px; background: var(--bg-surface); border: 1px solid var(--border-light);
+  border-radius: 10px; box-shadow: 0 8px 28px rgba(15,23,42,0.18); padding: 4px;
+}
+.dept-menu-item {
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  padding: 9px 12px; border: none; background: none; cursor: pointer;
+  font-size: 13px; color: var(--text-primary); border-radius: 7px; text-align: left;
+}
+.dept-menu-item:hover { background: var(--bg-subtle); }
+.dept-menu-item--danger { color: #dc2626; }
+.dept-menu-item--danger:hover { background: #fef2f2; }
+.dept-btn-danger { background: #ef4444 !important; color: #fff !important; border-color: #ef4444 !important; }
+
+/* Страница отдела */
+.dept-detail-head { display: flex; align-items: center; gap: 10px; padding: 4px 0 14px; }
+.dept-back {
+  width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--border-light);
+  background: var(--bg-surface); cursor: pointer; color: var(--text-secondary);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.dept-back:hover { color: var(--brand-primary); border-color: var(--brand-primary); }
+.dept-detail-name { font-size: 18px; font-weight: 700; color: var(--text-primary); flex: 1; }
+.dept-menu-wrap { flex-shrink: 0; }
+.dept-members-list { display: flex; flex-direction: column; gap: 6px; margin-top: 16px; max-width: 640px; padding-bottom: 24px; }
+.dept-member-row {
+  display: flex; align-items: center; gap: 10px;
+  border: 1px solid var(--border-light); border-radius: 10px; padding: 10px 14px;
+  background: var(--bg-surface);
+}
+.dept-member-name { flex: 1; font-size: 13px; font-weight: 500; color: var(--text-primary); }
+.dept-role-badge {
+  font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 6px;
+  background: var(--bg-subtle); color: var(--text-secondary);
+}
+.dept-role-badge--creator { background: #fef3c7; color: #b45309; }
+.dept-role-badge--admin { background: #dbeafe; color: #2563eb; }
+.dept-role-select {
+  height: 30px; padding: 0 8px; border: 1px solid var(--border-light); border-radius: 7px;
+  font-size: 12px; background: var(--bg-surface); color: var(--text-primary); outline: none; cursor: pointer;
+}
+.dept-role-select:focus { border-color: var(--brand-primary); }
+.dept-member-del {
+  width: 26px; height: 26px; border-radius: 7px; border: none; background: none;
+  cursor: pointer; color: var(--text-tertiary); font-size: 12px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.dept-member-del:hover { background: #fef2f2; color: #ef4444; }
 </style>

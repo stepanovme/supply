@@ -363,6 +363,19 @@ const canConfirmPayment = computed(() =>
 
 const conductLoading = ref(false)
 const payLoading = ref(false)
+const returnToKPLoading = ref(false)
+
+const canReturnToKP = computed(() => deal.value?.statusId === STATUS_CONDUCTED)
+
+const returnToKP = async () => {
+  returnToKPLoading.value = true
+  try {
+    await patchDealStatus(STATUS_READY_TO_CONDUCT)
+    if (deal.value) deal.value.statusId = STATUS_READY_TO_CONDUCT
+  } finally {
+    returnToKPLoading.value = false
+  }
+}
 const dealDate = ref('')
 
 const patchDealModes = async () => {
@@ -1940,6 +1953,15 @@ onBeforeUnmount(() => {
             <div class="section-head-actions">
               <button type="button" class="secondary-btn" :disabled="!deal || (!deal.items.length && !deal.services.length)" @click="printCommercialProposal">
                 Сформировать КП
+              </button>
+              <button
+                v-if="canReturnToKP"
+                type="button"
+                class="secondary-btn"
+                :disabled="returnToKPLoading"
+                @click="returnToKP"
+              >
+                {{ returnToKPLoading ? 'Возвращаем...' : 'Вернуть в КП' }}
               </button>
               <button
                 v-if="canConductDeal"

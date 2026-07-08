@@ -29,6 +29,8 @@ import PaymentsView from '../views/PaymentsView.vue'
 import DocumentsView from '../views/DocumentsView.vue'
 import ContractCreateView from '../views/ContractCreateView.vue'
 import ContractDetailView from '../views/ContractDetailView.vue'
+import LetterCreateView from '../views/LetterCreateView.vue'
+import LetterDetailView from '../views/LetterDetailView.vue'
 import DealDetailView from '../views/DealDetailView.vue'
 import DeliveriesView from '../views/DeliveriesView.vue'
 import DeliveryCreateView from '../views/DeliveryCreateView.vue'
@@ -37,6 +39,7 @@ import DeliveryProcessView from '../views/DeliveryProcessView.vue'
 import WikiView from '../views/WikiView.vue'
 import ChatsView from '../views/ChatsView.vue'
 import CommerceSellView from '../views/CommerceSellView.vue'
+import TasksView from '../views/TasksView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -45,6 +48,11 @@ const router = createRouter({
       path: '/',
       name: 'home',
       component: HomeView,
+    },
+    {
+      path: '/tasks',
+      name: 'tasks',
+      component: TasksView,
     },
     {
       path: '/projects',
@@ -155,6 +163,16 @@ const router = createRouter({
       path: '/documents/contracts/:id',
       name: 'contract-detail',
       component: ContractDetailView,
+    },
+    {
+      path: '/documents/letters/create',
+      name: 'letter-create',
+      component: LetterCreateView,
+    },
+    {
+      path: '/documents/letters/:id',
+      name: 'letter-detail',
+      component: LetterDetailView,
     },
     {
       path: '/deals/:dealId',

@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { useChatStore } from '../../stores/chat'
+import { useTasksStore } from '../../stores/tasks'
 
 const props = defineProps({
   links: {
@@ -23,10 +24,25 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const chat = useChatStore()
+const tasksStore = useTasksStore()
 
 const isActive = (link) => {
   if (!link.path) return false
   return route.path === link.path || route.path.startsWith(`${link.path}/`)
+}
+
+// Значение реалтайм из стора (обновляется по WS), с начальной загрузкой
+const incompleteTasks = computed(() => tasksStore.incompleteCount)
+const loadIncompleteTasks = async () => {
+  try {
+    const r = await fetch('/apisup/supply/tasks/incomplete-count', { credentials: 'include' })
+    if (r.ok) {
+      const d = await r.json()
+      tasksStore.setIncompleteCount(Number(d?.count ?? 0))
+    }
+  } catch {
+    // ignore
+  }
 }
 const fullName = computed(() => {
   if (!auth.user) return ''
@@ -84,6 +100,7 @@ onMounted(() => {
   window.addEventListener('mousedown', closeNotificationsOutside)
   chat.checkGlobalMentions()
   chat.connectWebSocket()
+  loadIncompleteTasks()
 })
 
 onBeforeUnmount(() => {
@@ -108,6 +125,7 @@ onBeforeUnmount(() => {
             :class="{ active: isActive(link) }"
           >
             {{ link.label }}
+            <span v-if="link.path === '/tasks' && incompleteTasks > 0" class="nav-badge">{{ incompleteTasks > 99 ? '99+' : incompleteTasks }}</span>
           </RouterLink>
           <span v-else class="nav-item is-disabled">{{ link.label }}</span>
         </template>
@@ -237,6 +255,23 @@ onBeforeUnmount(() => {
 .nav-item.is-disabled {
   cursor: default;
   opacity: 0.6;
+}
+
+.nav-badge {
+  margin-left: 6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: #ff3b30;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .nav-right {

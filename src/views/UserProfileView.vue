@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import TopNav from '../components/layout/TopNav.vue'
 import { mainNavLinks } from '../constants/mainNav'
@@ -12,6 +12,7 @@ const auth = useAuthStore()
 const sections = [
   { key: 'main', label: 'Основная информация' },
   { key: 'mail', label: 'Почта' },
+  { key: 'notifications', label: 'Уведомления' },
 ]
 
 const activeSection = ref('main')
@@ -260,6 +261,92 @@ watch(
   },
   { immediate: true }
 )
+
+// ─── Уведомления от ВК ────────────────────────────────────────────────────────
+const vkStatus = ref({ linked: false, vk_id: null, notifications_enabled: false })
+const vkLoading = ref(false)
+const vkSaving = ref(false)
+const vkLinkModalOpen = ref(false)
+const vkDisableConfirmOpen = ref(false)
+const vkUnlinkConfirmOpen = ref(false)
+
+const loadVkStatus = async () => {
+  vkLoading.value = true
+  try {
+    const r = await fetch('/apisup/supply/vk/status', { credentials: 'include' })
+    if (r.ok) {
+      const d = await r.json()
+      vkStatus.value = {
+        linked: !!d.linked,
+        vk_id: d.vk_id ?? null,
+        notifications_enabled: !!d.notifications_enabled,
+      }
+    }
+  } catch {
+    // ignore
+  } finally {
+    vkLoading.value = false
+  }
+}
+
+const setVkNotifications = async (enabled) => {
+  vkSaving.value = true
+  try {
+    const r = await fetch('/apisup/supply/vk/notifications', {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    })
+    if (r.ok) vkStatus.value.notifications_enabled = enabled
+  } catch {
+    // ignore
+  } finally {
+    vkSaving.value = false
+    vkDisableConfirmOpen.value = false
+  }
+}
+
+// Клик по переключателю уведомлений
+const onToggleVkNotifications = () => {
+  if (vkSaving.value) return
+  if (!vkStatus.value.notifications_enabled) {
+    // включаем
+    if (!vkStatus.value.linked) vkLinkModalOpen.value = true
+    else setVkNotifications(true)
+  } else {
+    // выключаем — с подтверждением
+    vkDisableConfirmOpen.value = true
+  }
+}
+
+const goToVkBot = () => {
+  const uid = currentUserId.value
+  window.open(`https://vk.me/kopzakupki?ref=${encodeURIComponent(uid)}`, '_blank')
+  vkLinkModalOpen.value = false
+}
+
+const unlinkVk = async () => {
+  vkSaving.value = true
+  try {
+    const r = await fetch('/apisup/supply/vk/link', { method: 'DELETE', credentials: 'include' })
+    if (r.ok) vkStatus.value = { linked: false, vk_id: null, notifications_enabled: false }
+  } catch {
+    // ignore
+  } finally {
+    vkSaving.value = false
+    vkUnlinkConfirmOpen.value = false
+  }
+}
+
+// Перезагружаем статус при возврате на вкладку (после привязки в ВК)
+onMounted(() => {
+  loadVkStatus()
+  window.addEventListener('focus', loadVkStatus)
+})
+onUnmounted(() => {
+  window.removeEventListener('focus', loadVkStatus)
+})
 </script>
 
 <template>
@@ -306,7 +393,7 @@ watch(
             </div>
           </div>
 
-          <div v-else class="panel">
+          <div v-else-if="activeSection === 'mail'" class="panel">
             <div class="panel-head panel-head-actions">
               <div>
                 <h2 class="section-title">Почта</h2>
@@ -352,9 +439,94 @@ watch(
               </article>
             </div>
           </div>
+
+          <div v-else-if="activeSection === 'notifications'" class="panel">
+            <div class="panel-head">
+              <div>
+                <h2 class="section-title">Уведомления</h2>
+                <p class="section-subtitle">Получайте уведомления о задачах и событиях в личные сообщения ВКонтакте.</p>
+              </div>
+            </div>
+
+            <div v-if="vkLoading" class="state">Загрузка...</div>
+            <div v-else class="vk-card">
+              <div class="vk-card-main">
+                <div class="vk-icon"><i class="fab fa-vk"></i></div>
+                <div class="vk-info">
+                  <div class="vk-title">Уведомления от ВКонтакте</div>
+                  <div class="vk-sub">
+                    <template v-if="vkStatus.linked">
+                      Аккаунт привязан<span v-if="vkStatus.vk_id"> · id {{ vkStatus.vk_id }}</span>
+                    </template>
+                    <template v-else>Аккаунт не привязан</template>
+                  </div>
+                </div>
+                <button
+                  class="vk-switch"
+                  :class="{ on: vkStatus.notifications_enabled }"
+                  type="button"
+                  role="switch"
+                  :aria-checked="vkStatus.notifications_enabled"
+                  :disabled="vkSaving"
+                  @click="onToggleVkNotifications"
+                >
+                  <span class="vk-switch-knob"></span>
+                </button>
+              </div>
+
+              <div v-if="vkStatus.linked" class="vk-card-footer">
+                <button class="btn btn-danger-ghost" type="button" :disabled="vkSaving" @click="vkUnlinkConfirmOpen = true">
+                  <i class="fas fa-link-slash"></i> Отвязать аккаунт
+                </button>
+              </div>
+            </div>
+          </div>
         </section>
       </div>
     </main>
+
+    <!-- Привязка ВК -->
+    <div v-if="vkLinkModalOpen" class="modal-backdrop" @click="vkLinkModalOpen = false">
+      <div class="modal-card" @click.stop>
+        <div class="vk-modal-icon"><i class="fab fa-vk"></i></div>
+        <div class="modal-title" style="text-align:center">Подключение уведомлений</div>
+        <div class="modal-subtitle" style="text-align:center">
+          Сейчас вы перейдёте в диалог с ботом ВКонтакте. Там нажмите кнопку
+          <b>«Начать»</b> и дождитесь сообщения <b>«Уведомления успешно настроены!»</b>.
+          После этого вернитесь на эту страницу.
+        </div>
+        <div class="modal-actions">
+          <button class="btn" type="button" @click="vkLinkModalOpen = false">Отмена</button>
+          <button class="btn btn-primary" type="button" @click="goToVkBot">
+            <i class="fab fa-vk"></i> Перейти в ВКонтакте
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Подтверждение выключения уведомлений -->
+    <div v-if="vkDisableConfirmOpen" class="modal-backdrop" @click="vkDisableConfirmOpen = false">
+      <div class="modal-card" @click.stop>
+        <div class="modal-title">Выключить уведомления?</div>
+        <div class="modal-subtitle">Вы перестанете получать уведомления о задачах и событиях в ВКонтакте.</div>
+        <div class="modal-actions">
+          <button class="btn" type="button" :disabled="vkSaving" @click="vkDisableConfirmOpen = false">Отмена</button>
+          <button class="btn btn-danger" type="button" :disabled="vkSaving" @click="setVkNotifications(false)">Выключить</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Подтверждение отвязки аккаунта -->
+    <div v-if="vkUnlinkConfirmOpen" class="modal-backdrop" @click="vkUnlinkConfirmOpen = false">
+      <div class="modal-card" @click.stop>
+        <div class="modal-title">Отвязать аккаунт ВКонтакте?</div>
+        <div class="modal-subtitle">Уведомления на этот аккаунт больше приходить не будут. Привязку можно будет выполнить заново.</div>
+        <div class="modal-actions">
+          <button class="btn" type="button" :disabled="vkSaving" @click="vkUnlinkConfirmOpen = false">Отмена</button>
+          <button class="btn btn-danger" type="button" :disabled="vkSaving" @click="unlinkVk">Отвязать</button>
+        </div>
+      </div>
+    </div>
 
     <div v-if="smtpModalOpen" class="modal-backdrop" @click="closeSmtpModal">
       <div class="modal-card" @click.stop>
@@ -747,5 +919,57 @@ watch(
   .modal-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* ── Уведомления от ВК ── */
+.vk-card {
+  border: 1px solid var(--border-light, #e2e8f0);
+  border-radius: 14px;
+  background: var(--bg-surface, #fff);
+  overflow: hidden;
+}
+.vk-card-main {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 20px;
+}
+.vk-icon {
+  width: 46px; height: 46px; border-radius: 12px; flex-shrink: 0;
+  background: #0077ff; color: #fff;
+  display: flex; align-items: center; justify-content: center; font-size: 22px;
+}
+.vk-info { flex: 1; min-width: 0; }
+.vk-title { font-size: 15px; font-weight: 600; color: var(--text-primary, #1e293b); }
+.vk-sub { font-size: 13px; color: var(--text-secondary, #64748b); margin-top: 2px; }
+.vk-switch {
+  position: relative; flex-shrink: 0;
+  width: 52px; height: 30px; border-radius: 999px;
+  border: none; cursor: pointer; background: #cbd5e1; padding: 0;
+  transition: background 0.2s;
+}
+.vk-switch.on { background: #0077ff; }
+.vk-switch:disabled { opacity: 0.6; cursor: default; }
+.vk-switch-knob {
+  position: absolute; top: 3px; left: 3px;
+  width: 24px; height: 24px; border-radius: 50%; background: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+  transition: transform 0.2s;
+}
+.vk-switch.on .vk-switch-knob { transform: translateX(22px); }
+.vk-card-footer {
+  padding: 12px 20px;
+  border-top: 1px solid var(--border-light, #e2e8f0);
+  display: flex; justify-content: flex-end;
+}
+.btn-danger-ghost {
+  border: 1px solid #fecaca; background: #fff; color: #dc2626;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.btn-danger-ghost:hover { background: #fef2f2; }
+.vk-modal-icon {
+  width: 56px; height: 56px; margin: 0 auto 12px; border-radius: 16px;
+  background: #0077ff; color: #fff; font-size: 26px;
+  display: flex; align-items: center; justify-content: center;
 }
 </style>

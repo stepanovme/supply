@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import TopNav from '../components/layout/TopNav.vue'
 import { mainNavLinks } from '../constants/mainNav'
@@ -41,6 +41,95 @@ const loadContracts = async () => {
     contractsLoading.value = false
   }
 }
+
+// ── Contract helpers ──────────────────────────────────────
+const typeLabel = (t) => ({ buyer: 'Покупатель', provider: 'Поставщик', provide: 'Поставщик', seller: 'Продавец', service: 'Услуги' }[t] || t || '—')
+
+// ── Contract sort ─────────────────────────────────────────
+const sortType = ref('') // '' | 'buyer' | 'provider'
+
+const toggleSortType = (val) => { sortType.value = sortType.value === val ? '' : val }
+
+// ── Contract filters ──────────────────────────────────────
+const cf = ref({
+  id: '', internalNum: '', num: '', docType: '', date: '',
+  customers: [], contractors: [], objects: [], workTypes: [],
+  statuses: [],
+})
+
+// Уникальные значения из загруженных договоров
+const cfUniqueCustomers   = computed(() => [...new Set(contracts.value.map(c => c.customer_name).filter(Boolean))].sort())
+const cfUniqueContractors = computed(() => [...new Set(contracts.value.map(c => c.contractor_name).filter(Boolean))].sort())
+const cfUniqueObjects     = computed(() => [...new Set(contracts.value.flatMap(c => c.objects?.map(o => o.object_name) || []).filter(Boolean))].sort())
+const cfUniqueWorkTypes   = computed(() => [...new Set(contracts.value.flatMap(c => c.work_types?.map(w => w.contract_work_type_name) || []).filter(Boolean))].sort())
+
+// Autocomplete state для каждого дропдауна
+const cfAc = ref({ customer: '', contractor: '', object: '', workType: '' })
+const cfOpen = ref({ customer: false, contractor: false, object: false, workType: false })
+
+const cfFilteredCustomers   = computed(() => { const q = cfAc.value.customer.toLowerCase();   return cfUniqueCustomers.value.filter(v => !q || v.toLowerCase().includes(q)) })
+const cfFilteredContractors = computed(() => { const q = cfAc.value.contractor.toLowerCase(); return cfUniqueContractors.value.filter(v => !q || v.toLowerCase().includes(q)) })
+const cfFilteredObjects     = computed(() => { const q = cfAc.value.object.toLowerCase();     return cfUniqueObjects.value.filter(v => !q || v.toLowerCase().includes(q)) })
+const cfFilteredWorkTypes   = computed(() => { const q = cfAc.value.workType.toLowerCase();   return cfUniqueWorkTypes.value.filter(v => !q || v.toLowerCase().includes(q)) })
+
+const toggleCfItem = (field, val) => {
+  const arr = cf.value[field]
+  const idx = arr.indexOf(val)
+  if (idx === -1) arr.push(val)
+  else arr.splice(idx, 1)
+}
+
+const cfStatusOptions = [
+  { key: 'information', label: 'Заполнен' },
+  { key: 'signed',      label: 'Подписан' },
+  { key: 'original',    label: 'Оригинал' },
+  { key: 'verified',    label: 'Сверен'   },
+]
+
+const toggleCfStatus = (key) => {
+  const idx = cf.value.statuses.indexOf(key)
+  if (idx === -1) cf.value.statuses.push(key)
+  else cf.value.statuses.splice(idx, 1)
+}
+
+const cfActive = computed(() =>
+  cf.value.id || cf.value.internalNum || cf.value.num || cf.value.docType || cf.value.date ||
+  cf.value.customers.length || cf.value.contractors.length ||
+  cf.value.objects.length || cf.value.workTypes.length || cf.value.statuses.length ||
+  sortType.value
+)
+
+const clearCf = () => {
+  cf.value = { id: '', internalNum: '', num: '', docType: '', date: '', customers: [], contractors: [], objects: [], workTypes: [], statuses: [] }
+  cfAc.value = { customer: '', contractor: '', object: '', workType: '' }
+  sortType.value = ''
+}
+
+const contractsFiltered = computed(() => {
+  let list = contracts.value
+  const f = cf.value
+  if (f.id)                list = list.filter(c => String(c.id).includes(f.id.trim()))
+  if (f.internalNum)       list = list.filter(c => (c.internal_num || '').toLowerCase().includes(f.internalNum.trim().toLowerCase()))
+  if (f.num)               list = list.filter(c => (c.num || '').toLowerCase().includes(f.num.trim().toLowerCase()))
+  if (f.docType)           list = list.filter(c => (c.document_type_name || '').toLowerCase().includes(f.docType.trim().toLowerCase()))
+  if (f.date)              list = list.filter(c => (c.date || '').startsWith(f.date))
+  if (f.customers.length)  list = list.filter(c => f.customers.includes(c.customer_name))
+  if (f.contractors.length)list = list.filter(c => f.contractors.includes(c.contractor_name))
+  if (f.objects.length)    list = list.filter(c => f.objects.some(o => c.objects?.some(co => co.object_name === o)))
+  if (f.workTypes.length)  list = list.filter(c => f.workTypes.every(w => c.work_types?.some(cw => cw.contract_work_type_name === w)))
+  if (f.statuses.length)   list = list.filter(c => f.statuses.every(s => c.statuses?.some(cs => cs.status === s)))
+  if (sortType.value)      list = list.filter(c => c.type === sortType.value)
+  return list
+})
+
+// Закрытие дропдаунов при клике вне
+const closeCfDropdowns = (e) => {
+  if (!e.target.closest('.cf-ac-wrap')) {
+    cfOpen.value = { customer: false, contractor: false, object: false, workType: false }
+  }
+}
+onMounted(() => { loadContracts(); document.addEventListener('mousedown', closeCfDropdowns) })
+onUnmounted(() => { document.removeEventListener('mousedown', closeCfDropdowns) })
 
 // ── Helpers ───────────────────────────────────────────────
 const formatDate = (value) => {
@@ -313,14 +402,64 @@ const filteredDocTypes = computed(() => {
 })
 
 // ── Switch section ────────────────────────────────────────
+// ── Letters ───────────────────────────────────────────────
+const lettersTab      = ref('outgoing') // 'outgoing' | 'incoming'
+const lettersOut      = ref([])
+const lettersIn       = ref([])
+const lettersLoading  = ref(false)
+const lettersError    = ref('')
+
+const loadLetters = async () => {
+  lettersLoading.value = true
+  lettersError.value   = ''
+  try {
+    const [outRes, inRes] = await Promise.all([
+      fetch('/apisup/supply/letters/my?type=outgoing', { credentials: 'include' }),
+      fetch('/apisup/supply/letters/my?type=incoming', { credentials: 'include' }),
+    ])
+    if (!outRes.ok || !inRes.ok) throw new Error()
+    lettersOut.value = await outRes.json()
+    lettersIn.value  = await inRes.json()
+  } catch {
+    lettersError.value = 'Не удалось загрузить письма'
+  } finally {
+    lettersLoading.value = false
+  }
+}
+
+const lf = ref({ id: '', num: '', name: '', fromTo: '', whereTo: '', object: '' })
+
+const lettersFiltered = computed(() => {
+  const list = lettersTab.value === 'outgoing' ? lettersOut.value : lettersIn.value
+  const f = lf.value
+  return list.filter(l => {
+    if (f.id      && !String(l.id).includes(f.id.trim()))                                        return false
+    if (f.num     && !(l.num || '').toLowerCase().includes(f.num.trim().toLowerCase()))           return false
+    if (f.name    && !(l.name || '').toLowerCase().includes(f.name.trim().toLowerCase()))         return false
+    if (f.fromTo  && !(l.from_to_name || '').toLowerCase().includes(f.fromTo.trim().toLowerCase())) return false
+    if (f.whereTo && !(l.where_to_name || '').toLowerCase().includes(f.whereTo.trim().toLowerCase())) return false
+    if (f.object  && !l.objects?.some(o => (o.object_name || '').toLowerCase().includes(f.object.trim().toLowerCase()))) return false
+    return true
+  })
+})
+
+const lHasStatus = (letter, key) => (letter.statuses || []).some(s => s.status === key)
+
+const LETTER_STATUSES = [
+  { key: 'prepared', label: 'Подготовлен' },
+  { key: 'signed',   label: 'Подписан'    },
+  { key: 'sent',     label: 'Отправлен'   },
+]
+
 const setRegistry = (key) => {
   activeRegistry.value = key
   if (key === 'contracts' && !contracts.value.length) loadContracts()
+  if (key === 'letters'   && !lettersOut.value.length && !lettersIn.value.length) loadLetters()
   if (key === 'work-types' && !workTypes.value.length) loadWorkTypes()
   if (key === 'doc-types' && !docTypes.value.length) loadDocTypes()
 }
 
-onMounted(() => { loadContracts() })
+
 </script>
 
 <template>
@@ -362,51 +501,156 @@ onMounted(() => { loadContracts() })
               <i class="fas fa-plus"></i> Создать договор
             </button>
           </div>
+          <!-- Filters -->
+          <div class="cf-panel">
+            <div class="cf-row">
+              <input class="cf-input cf-input--xs"   v-model="cf.id"          placeholder="ID" />
+              <input class="cf-input cf-input--sm"   v-model="cf.internalNum" placeholder="№ внутренний" />
+              <input class="cf-input cf-input--sm"   v-model="cf.num"         placeholder="Номер договора" />
+              <input class="cf-input"                v-model="cf.docType"     placeholder="Тип договора" />
+              <input class="cf-input cf-input--date" v-model="cf.date" type="date" title="Дата договора" />
+
+              <!-- Заказчик -->
+              <div class="cf-ac-wrap">
+                <div class="cf-ac-field" :class="{ active: cf.customers.length }" @click="cfOpen.customer = !cfOpen.customer">
+                  <span v-if="!cf.customers.length" class="cf-ac-placeholder">Заказчик</span>
+                  <span v-else class="cf-ac-selected">{{ cf.customers.length === 1 ? cf.customers[0] : `Заказчик: ${cf.customers.length}` }}</span>
+                  <i class="fas fa-chevron-down cf-ac-arrow" :class="{ open: cfOpen.customer }"></i>
+                </div>
+                <div v-if="cfOpen.customer" class="cf-ac-drop">
+                  <input class="cf-ac-search" v-model="cfAc.customer" placeholder="Поиск..." @mousedown.stop />
+                  <div v-for="v in cfFilteredCustomers" :key="v" class="cf-ac-item"
+                    :class="{ selected: cf.customers.includes(v) }"
+                    @mousedown.prevent="toggleCfItem('customers', v)">
+                    <i class="fas" :class="cf.customers.includes(v) ? 'fa-check-square' : 'fa-square'"></i>
+                    {{ v }}
+                  </div>
+                  <div v-if="!cfFilteredCustomers.length" class="cf-ac-empty">Не найдено</div>
+                </div>
+              </div>
+
+              <!-- Подрядчик -->
+              <div class="cf-ac-wrap">
+                <div class="cf-ac-field" :class="{ active: cf.contractors.length }" @click="cfOpen.contractor = !cfOpen.contractor">
+                  <span v-if="!cf.contractors.length" class="cf-ac-placeholder">Подрядчик</span>
+                  <span v-else class="cf-ac-selected">{{ cf.contractors.length === 1 ? cf.contractors[0] : `Подрядчик: ${cf.contractors.length}` }}</span>
+                  <i class="fas fa-chevron-down cf-ac-arrow" :class="{ open: cfOpen.contractor }"></i>
+                </div>
+                <div v-if="cfOpen.contractor" class="cf-ac-drop">
+                  <input class="cf-ac-search" v-model="cfAc.contractor" placeholder="Поиск..." @mousedown.stop />
+                  <div v-for="v in cfFilteredContractors" :key="v" class="cf-ac-item"
+                    :class="{ selected: cf.contractors.includes(v) }"
+                    @mousedown.prevent="toggleCfItem('contractors', v)">
+                    <i class="fas" :class="cf.contractors.includes(v) ? 'fa-check-square' : 'fa-square'"></i>
+                    {{ v }}
+                  </div>
+                  <div v-if="!cfFilteredContractors.length" class="cf-ac-empty">Не найдено</div>
+                </div>
+              </div>
+
+              <!-- Объект -->
+              <div class="cf-ac-wrap">
+                <div class="cf-ac-field" :class="{ active: cf.objects.length }" @click="cfOpen.object = !cfOpen.object">
+                  <span v-if="!cf.objects.length" class="cf-ac-placeholder">Объект</span>
+                  <span v-else class="cf-ac-selected">{{ cf.objects.length === 1 ? cf.objects[0] : `Объект: ${cf.objects.length}` }}</span>
+                  <i class="fas fa-chevron-down cf-ac-arrow" :class="{ open: cfOpen.object }"></i>
+                </div>
+                <div v-if="cfOpen.object" class="cf-ac-drop">
+                  <input class="cf-ac-search" v-model="cfAc.object" placeholder="Поиск..." @mousedown.stop />
+                  <div v-for="v in cfFilteredObjects" :key="v" class="cf-ac-item"
+                    :class="{ selected: cf.objects.includes(v) }"
+                    @mousedown.prevent="toggleCfItem('objects', v)">
+                    <i class="fas" :class="cf.objects.includes(v) ? 'fa-check-square' : 'fa-square'"></i>
+                    {{ v }}
+                  </div>
+                  <div v-if="!cfFilteredObjects.length" class="cf-ac-empty">Не найдено</div>
+                </div>
+              </div>
+
+              <!-- Вид работ -->
+              <div class="cf-ac-wrap">
+                <div class="cf-ac-field" :class="{ active: cf.workTypes.length }" @click="cfOpen.workType = !cfOpen.workType">
+                  <span v-if="!cf.workTypes.length" class="cf-ac-placeholder">Вид работ</span>
+                  <span v-else class="cf-ac-selected">{{ cf.workTypes.length === 1 ? cf.workTypes[0] : `Работ: ${cf.workTypes.length}` }}</span>
+                  <i class="fas fa-chevron-down cf-ac-arrow" :class="{ open: cfOpen.workType }"></i>
+                </div>
+                <div v-if="cfOpen.workType" class="cf-ac-drop">
+                  <input class="cf-ac-search" v-model="cfAc.workType" placeholder="Поиск..." @mousedown.stop />
+                  <div v-for="v in cfFilteredWorkTypes" :key="v" class="cf-ac-item"
+                    :class="{ selected: cf.workTypes.includes(v) }"
+                    @mousedown.prevent="toggleCfItem('workTypes', v)">
+                    <i class="fas" :class="cf.workTypes.includes(v) ? 'fa-check-square' : 'fa-square'"></i>
+                    {{ v }}
+                  </div>
+                  <div v-if="!cfFilteredWorkTypes.length" class="cf-ac-empty">Не найдено</div>
+                </div>
+              </div>
+
+              <button v-if="cfActive" class="cf-reset" @click="clearCf"><i class="fas fa-times"></i> Сбросить</button>
+            </div>
+            <div class="cf-status-row">
+              <span class="cf-status-label">Тип:</span>
+              <button class="cf-status-chip" :class="{ 'active active--buyer': sortType === 'buyer' }" @click="toggleSortType('buyer')">Покупатель</button>
+              <button class="cf-status-chip" :class="{ 'active active--provider': sortType === 'provider' }" @click="toggleSortType('provider')">Поставщик</button>
+              <span class="cf-status-sep">|</span>
+              <span class="cf-status-label">Статус:</span>
+              <button v-for="s in cfStatusOptions" :key="s.key"
+                class="cf-status-chip" :class="{ active: cf.statuses.includes(s.key) }"
+                @click="toggleCfStatus(s.key)">{{ s.label }}</button>
+              <span v-if="cfActive" class="cf-results-count">{{ contractsFiltered.length }} из {{ contracts.length }}</span>
+            </div>
+          </div>
+
           <div class="table-wrap">
             <div v-if="contractsLoading" class="state-msg">Загрузка...</div>
             <div v-else-if="contractsError" class="state-msg state-error">{{ contractsError }}</div>
             <table v-else class="contracts-table">
               <colgroup>
                 <col style="width:40px"><col style="width:40px"><col style="width:160px">
-                <col style="width:100px"><col style="width:100px">
+                <col style="width:80px"><col style="width:100px"><col style="width:100px">
                 <col style="width:160px"><col style="width:160px"><col style="width:100px">
                 <col style="width:100px"><col style="width:100px"><col style="width:180px">
                 <col style="width:36px"><col style="width:36px"><col style="width:36px"><col style="width:36px">
               </colgroup>
               <thead>
                 <tr>
-                  <th>ID</th><th>№</th><th>Договор</th><th>Создатель</th><th>Даты</th>
+                  <th>ID</th><th>№</th><th>Договор</th><th>Тип</th><th>Создатель</th><th>Даты</th>
                   <th>Заказчик</th><th>Подрядчик</th><th>Объект</th>
                   <th class="th-num">Сумма</th><th class="th-num">Задолженность</th><th>Вид работ</th>
-                  <th class="th-vert"><span class="vert-text">Информация о договоре</span></th>
+                  <th class="th-vert"><span class="vert-text">Заполнен</span></th>
                   <th class="th-vert"><span class="vert-text">Подписан</span></th>
                   <th class="th-vert"><span class="vert-text">Оригинал</span></th>
-                  <th class="th-vert"><span class="vert-text">Сверка</span></th>
+                  <th class="th-vert"><span class="vert-text">Сверен</span></th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-if="!contracts.length">
-                  <td colspan="15" class="empty-cell">Нет договоров</td>
+                <tr v-if="!contractsFiltered.length">
+                  <td colspan="16" class="empty-cell">{{ contracts.length ? 'Ничего не найдено' : 'Нет договоров' }}</td>
                 </tr>
-                <tr v-for="c in contracts" :key="c.id">
+                <tr v-for="c in contractsFiltered" :key="c.id">
                   <td class="mono td-id">{{ c.id }}</td>
                   <td class="mono td-num">{{ c.internal_num || '—' }}</td>
                   <td class="td-name">
                     <span class="contract-link" @click="router.push(`/documents/contracts/${c.id}`)">{{ c.full_name || c.name || '—' }}</span>
                   </td>
+                  <td>
+                    <span v-if="c.type" class="type-badge" :class="`type-badge--${c.type}`">{{ typeLabel(c.type) }}</span>
+                    <span v-else>—</span>
+                  </td>
                   <td>{{ c.created_by_user?.short_fio || '—' }}</td>
                   <td>
                     <div class="date-stack">
+                      <span class="date-line"><span class="date-label">Дог:</span> {{ formatDate(c.date) }}</span>
                       <span class="date-line"><span class="date-label">С:</span> {{ formatDate(c.date_start) }}</span>
                       <span class="date-line"><span class="date-label">По:</span> {{ formatDate(c.date_end) }}</span>
                     </div>
                   </td>
                   <td>{{ c.customer_name || '—' }}</td>
                   <td>{{ c.contractor_name || '—' }}</td>
-                  <td>
-                    <div v-if="c.objects?.length" class="wt-list">
-                      <span v-for="obj in c.objects" :key="obj.id">{{ obj.object_name || '—' }}</span>
-                    </div>
+                  <td class="td-truncate">
+                    <span v-if="c.objects?.length" :title="c.objects.map(o => o.object_name).join(', ')">
+                      {{ c.objects.map(o => o.object_name).join(', ') }}
+                    </span>
                     <span v-else>—</span>
                   </td>
                   <td class="mono td-num">{{ formatMoney(c.sum) }}</td>
@@ -417,10 +661,121 @@ onMounted(() => { loadContracts() })
                     </div>
                     <span v-else>—</span>
                   </td>
-                  <td class="td-status"><i class="fas fa-times-circle status-no"></i></td>
-                  <td class="td-status"><i class="fas fa-times-circle status-no"></i></td>
-                  <td class="td-status"><i class="fas fa-times-circle status-no"></i></td>
-                  <td class="td-status"><i class="fas fa-times-circle status-no"></i></td>
+                  <td class="td-status">
+                    <i class="fas" :class="c.statuses?.some(s=>s.status==='information') ? 'fa-check-circle status-yes' : 'fa-times-circle status-no'"></i>
+                  </td>
+                  <td class="td-status">
+                    <i class="fas" :class="c.statuses?.some(s=>s.status==='signed') ? 'fa-check-circle status-yes' : 'fa-times-circle status-no'"></i>
+                  </td>
+                  <td class="td-status">
+                    <i class="fas" :class="c.statuses?.some(s=>s.status==='original') ? 'fa-check-circle status-yes' : 'fa-times-circle status-no'"></i>
+                  </td>
+                  <td class="td-status">
+                    <i class="fas" :class="c.statuses?.some(s=>s.status==='verified') ? 'fa-check-circle status-yes' : 'fa-times-circle status-no'"></i>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </template>
+
+        <!-- Letters -->
+        <template v-else-if="activeRegistry === 'letters'">
+          <div class="section-header">
+            <h1 class="section-title">Реестр писем</h1>
+            <button class="btn-add" @click="router.push(`/documents/letters/create?type=${lettersTab}`)">
+              <i class="fas fa-plus"></i> Создать письмо
+            </button>
+          </div>
+
+          <!-- Type tabs -->
+          <div class="letters-type-tabs">
+            <button class="letters-type-tab" :class="{ active: lettersTab === 'outgoing' }" @click="lettersTab = 'outgoing'">
+              <i class="fas fa-paper-plane"></i> Исходящие
+            </button>
+            <button class="letters-type-tab" :class="{ active: lettersTab === 'incoming' }" @click="lettersTab = 'incoming'">
+              <i class="fas fa-inbox"></i> Входящие
+            </button>
+          </div>
+
+          <!-- Filters -->
+          <div class="cf-panel cf-panel--inset">
+            <div class="cf-row">
+              <input class="cf-input cf-input--xs" v-model="lf.id"      placeholder="ID" />
+              <input class="cf-input cf-input--sm" v-model="lf.num"     placeholder="№" />
+              <input class="cf-input"              v-model="lf.name"    placeholder="Название письма" />
+              <input class="cf-input"              v-model="lf.fromTo"  placeholder="От кого" />
+              <input class="cf-input"              v-model="lf.whereTo" placeholder="Кому" />
+              <input class="cf-input"              v-model="lf.object"  placeholder="Объект" />
+              <button v-if="lf.id||lf.num||lf.name||lf.fromTo||lf.whereTo||lf.object" class="cf-reset" @click="lf={id:'',num:'',name:'',fromTo:'',whereTo:'',object:''}">
+                <i class="fas fa-times"></i> Сбросить
+              </button>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <div v-if="lettersLoading" class="state-msg">Загрузка...</div>
+            <div v-else-if="lettersError" class="state-msg state-error">{{ lettersError }}</div>
+            <table v-else class="contracts-table">
+              <colgroup>
+                <col style="width:40px">
+                <col style="width:60px">
+                <col style="width:220px">
+                <col style="width:100px">
+                <col style="width:180px">
+                <col style="width:180px">
+                <col style="width:160px">
+                <col>
+                <col style="width:36px">
+                <col style="width:36px">
+                <col style="width:36px">
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>№</th>
+                  <th>Письмо</th>
+                  <th>Дата</th>
+                  <th>От кого</th>
+                  <th>Кому</th>
+                  <th>Объект</th>
+                  <th>Примечание</th>
+                  <th class="th-vert"><span class="vert-text">Подготовлен</span></th>
+                  <th class="th-vert"><span class="vert-text">Подписан</span></th>
+                  <th class="th-vert"><span class="vert-text">Отправлен</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="!lettersFiltered.length">
+                  <td colspan="11" class="empty-cell">{{ (lettersTab === 'outgoing' ? lettersOut : lettersIn).length ? 'Ничего не найдено' : 'Нет писем' }}</td>
+                </tr>
+                <tr v-for="l in lettersFiltered" :key="l.id">
+                  <td class="mono td-id">{{ l.id }}</td>
+                  <td class="mono td-num">{{ l.internal_num || '—' }}</td>
+                  <td class="td-name">
+                    <span class="contract-link" @click="router.push(`/documents/letters/${l.id}`)">
+                      {{ l.name || '—' }}{{ l.num ? ' № ' + l.num : '' }}
+                    </span>
+                  </td>
+                  <td class="td-date">{{ formatDate(l.created_at) }}</td>
+                  <td>{{ l.from_to_name || '—' }}</td>
+                  <td>{{ l.where_to_name || '—' }}</td>
+                  <td class="td-truncate">
+                    <span v-if="l.objects?.length" :title="l.objects.map(o => o.object_name).join(', ')">
+                      {{ l.objects.map(o => o.object_name).join(', ') }}
+                    </span>
+                    <span v-else>—</span>
+                  </td>
+                  <td>{{ l.comment || '—' }}</td>
+                  <td class="td-status">
+                    <i class="fas" :class="lHasStatus(l,'prepared') ? 'fa-check-circle status-yes' : 'fa-times-circle status-no'"></i>
+                  </td>
+                  <td class="td-status">
+                    <i class="fas" :class="lHasStatus(l,'signed')   ? 'fa-check-circle status-yes' : 'fa-times-circle status-no'"></i>
+                  </td>
+                  <td class="td-status">
+                    <i class="fas" :class="lHasStatus(l,'sent')     ? 'fa-check-circle status-yes' : 'fa-times-circle status-no'"></i>
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -781,6 +1136,162 @@ onMounted(() => { loadContracts() })
 }
 
 /* ── Contracts table ── */
+/* ── Contract filters ── */
+.cf-panel {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin: 0 24px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cf-panel--inset {
+  margin-top: 12px;
+}
+.cf-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.cf-input {
+  padding: 6px 10px;
+  border: 1.5px solid var(--border-light);
+  border-radius: 7px;
+  font-size: 12px;
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+  outline: none;
+  min-width: 120px;
+  flex: 1;
+  transition: border-color .15s;
+}
+.cf-input:focus { border-color: var(--brand-primary); background: var(--bg-surface); }
+.cf-input--xs   { max-width: 60px; min-width: 50px; flex: none; }
+.cf-input--sm   { max-width: 120px; }
+.cf-input--date { max-width: 140px; flex: none; }
+.cf-reset {
+  display: flex; align-items: center; gap: 5px;
+  padding: 6px 12px;
+  border: 1.5px solid #ef4444;
+  border-radius: 7px;
+  color: #ef4444;
+  background: transparent;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.cf-reset:hover { background: #ef4444; color: #fff; }
+.cf-status-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.cf-status-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.cf-status-chip {
+  padding: 3px 10px;
+  border-radius: 20px;
+  border: 1.5px solid var(--border-light);
+  background: transparent;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all .15s;
+}
+.cf-status-chip.active { border-color: var(--brand-primary); background: var(--brand-primary); color: #fff; }
+.cf-status-chip:not(.active):hover { border-color: var(--brand-primary); color: var(--brand-primary); }
+.cf-results-count {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+/* CF autocomplete dropdowns */
+.cf-ac-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 130px;
+}
+.cf-ac-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border: 1.5px solid var(--border-light);
+  border-radius: 7px;
+  font-size: 12px;
+  background: var(--bg-subtle);
+  cursor: pointer;
+  transition: border-color .15s;
+  gap: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.cf-ac-field.active { border-color: var(--brand-primary); background: var(--bg-surface); }
+.cf-ac-field:hover  { border-color: var(--brand-primary); }
+.cf-ac-placeholder  { color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; }
+.cf-ac-selected     { color: var(--text-primary); font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
+.cf-ac-arrow        { font-size: 10px; color: var(--text-tertiary); flex-shrink: 0; transition: transform .15s; }
+.cf-ac-arrow.open   { transform: rotate(180deg); }
+.cf-ac-drop {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 200px;
+  max-width: 320px;
+  background: var(--bg-surface);
+  border: 1.5px solid var(--border-light);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.12);
+  z-index: 100;
+  overflow: hidden;
+}
+.cf-ac-search {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 12px;
+  border: none;
+  border-bottom: 1px solid var(--border-light);
+  background: var(--bg-subtle);
+  font-size: 12px;
+  outline: none;
+  color: var(--text-primary);
+}
+.cf-ac-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text-primary);
+  transition: background .1s;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cf-ac-item:hover    { background: var(--bg-subtle); }
+.cf-ac-item.selected { background: color-mix(in srgb, var(--brand-primary) 8%, transparent); }
+.cf-ac-item .fas     { font-size: 12px; color: var(--text-tertiary); flex-shrink: 0; }
+.cf-ac-item.selected .fas { color: var(--brand-primary); }
+.cf-ac-empty {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  text-align: center;
+}
+.cf-ac-drop { max-height: 240px; overflow-y: auto; }
+
 .contracts-table {
   width: 100%;
   border-collapse: collapse;
@@ -815,6 +1326,7 @@ onMounted(() => { loadContracts() })
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+.contracts-table tbody tr { height: 160px; }
 .contracts-table tbody tr:hover td { background: var(--bg-subtle); }
 
 .th-vert { padding: 4px 0 !important; vertical-align: bottom !important; text-align: center !important; }
@@ -823,7 +1335,7 @@ onMounted(() => { loadContracts() })
   writing-mode: vertical-rl;
   transform: rotate(180deg);
   white-space: nowrap;
-  height: 52px;
+  height: 90px;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.06em;
@@ -1087,6 +1599,13 @@ onMounted(() => { loadContracts() })
 .td-person { font-size: 12px; color: var(--text-secondary); }
 .td-empty  { color: var(--text-tertiary); }
 
+.td-truncate {
+  max-width: 180px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .wt-list {
   display: flex;
   flex-direction: column;
@@ -1113,7 +1632,41 @@ onMounted(() => { loadContracts() })
   color: var(--text-secondary);
   white-space: nowrap;
 }
-.type-badge--buyer   { background: #dbeafe; color: #1d4ed8; }
-.type-badge--seller  { background: #dcfce7; color: #166534; }
-.type-badge--service { background: #fef9c3; color: #854d0e; }
+.type-badge--buyer     { background: #dbeafe; color: #1d4ed8; }
+.type-badge--provider  { background: #f3e8ff; color: #7e22ce; }
+.type-badge--provide   { background: #f3e8ff; color: #7e22ce; }
+.type-badge--seller    { background: #dcfce7; color: #166534; }
+.type-badge--service   { background: #fef9c3; color: #854d0e; }
+.cf-status-sep { color: var(--border-color); margin: 0 6px; }
+.active--buyer    { background: #1d4ed8 !important; color: #fff !important; }
+.active--provider { background: #7e22ce !important; color: #fff !important; }
+
+/* ── Letters type tabs ── */
+.letters-type-tabs {
+  display: flex;
+  gap: 0;
+  margin: 0 24px;
+  border-bottom: 2px solid var(--border-color);
+}
+.letters-type-tab {
+  padding: 9px 20px;
+  border: none;
+  background: none;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  transition: color 0.15s, border-color 0.15s;
+}
+.letters-type-tab:hover { color: var(--accent); }
+.letters-type-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
 </style>
