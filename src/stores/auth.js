@@ -3,7 +3,10 @@ import { defineStore } from 'pinia'
 const SERVICE_ID = '7dd8be78-cf3a-423a-852f-eab3511fbe30'
 const SSO_URL = 'https://sso.st29.ru/?url=supply.st29.ru'
 
-const isPublicRoute = () => window.location.pathname.startsWith('/request-suppliers/link/')
+const isPublicRoute = () => {
+  const p = window.location.pathname
+  return p.startsWith('/request-suppliers/link/') || p.startsWith('/wiki') || p.startsWith('/news')
+}
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({

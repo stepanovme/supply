@@ -1,5 +1,5 @@
 export const mainNavLinks = [
-  { label: 'Заявки', path: '/' },
+  { label: 'Заявки', path: '/requests' },
   { label: 'Счета', path: '/invoices' },
   { label: 'Сделки', path: '/deals' },
   { label: 'Платежи', path: '/payments' },

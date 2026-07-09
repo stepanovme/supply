@@ -480,6 +480,37 @@ const setCell = (row, key, value) => {
   row[key] = value
 }
 
+// Разбор данных из буфера (Excel/таблицы) с учётом кавычек:
+// ячейки с переносами строк/табами оборачиваются в " ", внутренние " экранируются как ""
+const parseClipboardTable = (text) => {
+  const s = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  const rows = []
+  let row = []
+  let field = ''
+  let inQuotes = false
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (inQuotes) {
+      if (ch === '"') {
+        if (s[i + 1] === '"') { field += '"'; i++ } else inQuotes = false
+      } else field += ch
+    } else if (ch === '"') {
+      inQuotes = true
+    } else if (ch === '\t') {
+      row.push(field); field = ''
+    } else if (ch === '\n') {
+      row.push(field); rows.push(row); row = []; field = ''
+    } else field += ch
+  }
+  row.push(field); rows.push(row)
+  // убрать пустую последнюю строку от завершающего перевода строки
+  if (rows.length > 1) {
+    const last = rows[rows.length - 1]
+    if (last.length === 1 && last[0] === '') rows.pop()
+  }
+  return rows
+}
+
 const handlePaste = async (event) => {
   if (!isRequestEditable.value) return
   const target = event.target
@@ -496,8 +527,11 @@ const handlePaste = async (event) => {
   const startColIndex = columnOrder.indexOf(startCol)
   if (startColIndex === -1) return
 
-  const normalized = clipboard.replace(/\r/g, '')
-  const rowLines = normalized.split('\n').filter((line) => line.length > 0).map((line) => line.split('\t'))
+  // схлопнуть переносы строк внутри одной ячейки в пробел
+  const cleanCell = (v) => (v ?? '').replace(/\s*\n+\s*/g, ' ').trim()
+
+  const rowLines = parseClipboardTable(clipboard)
+    .filter((cols) => !(cols.length === 1 && cols[0] === ''))
   const hasTableData = rowLines.some((cols) => cols.length > 1)
   const touchedRows = new Set()
   if (!hasTableData && rowLines.length > 1) {
@@ -505,13 +539,13 @@ const handlePaste = async (event) => {
       const rowIndex = startRow - 1 + rIdx
       const rowObj = rows.value[rowIndex]
       if (!rowObj) return
-      setCell(rowObj, startCol, cols[0] ?? '')
+      setCell(rowObj, startCol, cleanCell(cols[0]))
       touchedRows.add(rowIndex + 1)
     })
   } else if (!hasTableData) {
     const rowObj = rows.value[startRow - 1]
     if (!rowObj) return
-    setCell(rowObj, startCol, normalized.replace(/\n+/g, ' ').trim())
+    setCell(rowObj, startCol, cleanCell(rowLines[0]?.[0] ?? ''))
     touchedRows.add(startRow)
   } else {
     rowLines.forEach((cols, rIdx) => {
@@ -522,7 +556,7 @@ const handlePaste = async (event) => {
       cols.forEach((cell, cIdx) => {
         const colKey = columnOrder[startColIndex + cIdx]
         if (!colKey) return
-        setCell(rowObj, colKey, cell)
+        setCell(rowObj, colKey, cleanCell(cell))
       })
       touchedRows.add(rowIndex + 1)
     })

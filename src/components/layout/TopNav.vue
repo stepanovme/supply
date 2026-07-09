@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { useChatStore } from '../../stores/chat'
 import { useTasksStore } from '../../stores/tasks'
+import { useTicketsStore } from '../../stores/tickets'
 
 const props = defineProps({
   links: {
@@ -25,6 +26,7 @@ const router = useRouter()
 const auth = useAuthStore()
 const chat = useChatStore()
 const tasksStore = useTasksStore()
+const ticketsStore = useTicketsStore()
 
 const isActive = (link) => {
   if (!link.path) return false
@@ -66,7 +68,6 @@ const notificationsOpen = ref(false)
 const notificationsRef = ref(null)
 const feedbackOpen = ref(false)
 const feedbackRef = ref(null)
-const supportUrl = import.meta.env.VITE_SUPPORT_URL || 'mailto:support@st29.ru'
 const wikiUrl = import.meta.env.VITE_WIKI_URL || '/docs/'
 const notificationsTotal = computed(() =>
   Number(props.notificationCounts?.requests || 0)
@@ -101,6 +102,7 @@ onMounted(() => {
   chat.checkGlobalMentions()
   chat.connectWebSocket()
   loadIncompleteTasks()
+  ticketsStore.loadIncompleteCount()
 })
 
 onBeforeUnmount(() => {
@@ -112,7 +114,7 @@ onBeforeUnmount(() => {
 <template>
   <nav class="top-nav">
     <div class="nav-left">
-      <div class="nav-brand">
+      <div class="nav-brand" role="button" title="На главную" @click="router.push('/')">
         <div class="brand-icon"><i class="fas fa-layer-group"></i></div>
         <span>КОПЗАКУПКИ</span>
       </div>
@@ -155,13 +157,15 @@ onBeforeUnmount(() => {
       <div ref="feedbackRef" class="notif-wrap">
         <button class="icon-btn" type="button" aria-label="Обратная связь" @click.stop="toggleFeedback">
           <i class="fas fa-circle-question"></i>
+          <span v-if="ticketsStore.incompleteCount > 0" class="feedback-badge">{{ ticketsStore.incompleteCount > 99 ? '99+' : ticketsStore.incompleteCount }}</span>
         </button>
         <div v-if="feedbackOpen" class="notif-menu feedback-menu">
           <a class="notif-item feedback-link" :href="wikiUrl" @click="feedbackOpen = false">
             <span>Вики</span>
           </a>
-          <a class="notif-item feedback-link" :href="supportUrl" target="_blank" rel="noopener">
+          <a class="notif-item feedback-link" href="#" @click.prevent="router.push('/tickets'); feedbackOpen = false">
             <span>Написать нам</span>
+            <strong v-if="ticketsStore.incompleteCount > 0">{{ ticketsStore.incompleteCount }}</strong>
           </a>
         </div>
       </div>
@@ -207,7 +211,9 @@ onBeforeUnmount(() => {
   font-weight: 700;
   color: var(--text-primary);
   letter-spacing: -0.5px;
+  cursor: pointer;
 }
+.nav-brand:hover { opacity: 0.85; }
 
 .brand-icon {
   background: var(--brand-primary);
@@ -350,6 +356,26 @@ onBeforeUnmount(() => {
 .icon-btn:hover {
   background: var(--bg-surface);
   color: var(--text-primary);
+}
+
+.feedback-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: #ff3b30;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--bg-surface);
 }
 
 .notif-dot {

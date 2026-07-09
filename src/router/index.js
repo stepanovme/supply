@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from '../views/HomeView.vue'
+import DashboardView from '../views/DashboardView.vue'
 import StockSelectView from '../views/StockSelectView.vue'
 import ProjectsView from '../views/ProjectsView.vue'
 import ProjectDetailView from '../views/ProjectDetailView.vue'
@@ -37,15 +38,23 @@ import DeliveryCreateView from '../views/DeliveryCreateView.vue'
 import DeliveryDetailView from '../views/DeliveryDetailView.vue'
 import DeliveryProcessView from '../views/DeliveryProcessView.vue'
 import WikiView from '../views/WikiView.vue'
+import NewsView from '../views/NewsView.vue'
 import ChatsView from '../views/ChatsView.vue'
 import CommerceSellView from '../views/CommerceSellView.vue'
 import TasksView from '../views/TasksView.vue'
+import TicketsView from '../views/TicketsView.vue'
+import TicketDetailView from '../views/TicketDetailView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
     {
       path: '/',
+      name: 'dashboard',
+      component: DashboardView,
+    },
+    {
+      path: '/requests',
       name: 'home',
       component: HomeView,
     },
@@ -145,6 +154,16 @@ const router = createRouter({
       component: DealsView,
     },
     {
+      path: '/tickets',
+      name: 'tickets',
+      component: TicketsView,
+    },
+    {
+      path: '/tickets/:ticketId',
+      name: 'ticket-detail',
+      component: TicketDetailView,
+    },
+    {
       path: '/payments',
       name: 'payments',
       component: PaymentsView,
@@ -203,6 +222,11 @@ const router = createRouter({
       path: '/wiki',
       name: 'wiki',
       component: WikiView,
+    },
+    {
+      path: '/news',
+      name: 'news',
+      component: NewsView,
     },
     {
       path: '/chats',

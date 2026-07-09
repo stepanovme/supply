@@ -681,14 +681,15 @@ export const useChatStore = defineStore('chat', {
         const found = this.chatList.find((c) => String(c.id) === this.currentChatId)
         if (found?.title) return found.title
       }
-      const labels = {
-        invoice: 'Чат счета',
-        request: 'Чат заявки',
-        deal: 'Чат сделки',
-        specification: 'Чат спецификации',
-        personal: 'Личный чат',
-        delivery: 'Чат доставки',
-      }
+  const labels = {
+    invoice: 'Чат счета',
+    request: 'Чат заявки',
+    deal: 'Чат сделки',
+    specification: 'Чат спецификации',
+    personal: 'Личный чат',
+    delivery: 'Чат доставки',
+    ticket: 'Чат тикета',
+  }
       return labels[this.currentEntityType] || 'Чат'
     },
   },
